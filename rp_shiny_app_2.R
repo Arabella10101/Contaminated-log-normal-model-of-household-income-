@@ -4,10 +4,6 @@
 #  Stats SA · Fact_IES2023_Households.csv
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Required packages: shiny, dplyr, ggplot2, DT, scales
-# Install with:
-#   install.packages(c("shiny","dplyr","ggplot2","DT","scales"))
-
 library(shiny)
 library(dplyr)
 library(ggplot2)
@@ -32,11 +28,13 @@ elec_lbl    <- c("1"="Yes","2"="No")
 PAL <- c("#A0522D","#D4783E","#C4956A","#8B7D6B",
          "#6B4226","#3D2B1F","#EDD9C0","#D4A76A","#B8865C","#7A5C3E")
 
-stat_mode <- function(x, na.rm = TRUE) {
+#estimates the most common income level for a population group by smoothing the data into a 
+#continuous curve and identifying the point where that curve reaches its highest peak.
+density_mode <- function(x, na.rm = TRUE) {
   if (na.rm) x <- x[!is.na(x)]
-  if (length(x) == 0) return(NA_real_)
-  ux <- unique(x)
-  ux[which.max(tabulate(match(x, ux)))]
+  if (length(x) < 2) return(NA_real_)
+  d <- density(x)
+  d$x[which.max(d$y)]
 }
 
 # ── ggplot theme ───────────────────────────────────────────────────────────────
@@ -396,7 +394,7 @@ ui <- fluidPage(
             br(),
             fluidRow(
               column(12,
-                p(class = "section-head", "Median Income by Self-Reported Status"),
+                p(class = "section-head", "Mode Income by Self-Reported Status"),
                 plotOutput("plt_status", height = "250px")
               )
             )
@@ -608,12 +606,12 @@ server <- function(input, output, session) {
   output$card1 <- renderUI({
     req(filt())
     stat_card("Mode Annual Income",
-              fmt_r(stat_mode(filt()$INCOME, na.rm=TRUE)))
+              fmt_r(density_mode(filt()$INCOME, na.rm=TRUE)))
   })
   output$card2 <- renderUI({
     req(filt())
     stat_card("Mode Annual Expenditure",
-              fmt_r(stat_mode(filt()$EXPENDITURE, na.rm=TRUE)), "dark")
+              fmt_r(density_mode(filt()$EXPENDITURE, na.rm=TRUE)), "dark")
   })
   output$card3 <- renderUI({
     req(filt())
@@ -633,7 +631,7 @@ server <- function(input, output, session) {
   output$card6 <- renderUI({
     req(filt())
     stat_card("Mode Income Per Capita",
-              fmt_r(stat_mode(filt()$INCOME_PCP, na.rm=TRUE)), "tan")
+              fmt_r(density_mode(filt()$INCOME_PCP, na.rm=TRUE)), "tan")
   })
 
   # ── Summary: Decile table ────────────────────────────────────────────────────
@@ -643,7 +641,7 @@ server <- function(input, output, session) {
       group_by(Decile = INCOME_DECILE) %>%
       summarise(
         `Households` = n(),
-        `Mode Income (R)` = round(stat_mode(INCOME, na.rm=TRUE)),
+        `Mode Income (R)` = round(density_mode(INCOME, na.rm=TRUE)),
         `Mean Income (R)`   = round(mean(INCOME,   na.rm=TRUE)),
         .groups = "drop"
       ) %>%
@@ -665,9 +663,9 @@ server <- function(input, output, session) {
       group_by(`Pop Group` = Group) %>%
       summarise(
         `N`                 = n(),
-        `Mode Income (R)` = format(round(stat_mode(INCOME,       na.rm=TRUE)), big.mark=","),
-        `Mode Exp. (R)`   = format(round(stat_mode(EXPENDITURE,  na.rm=TRUE)), big.mark=","),
-        `Mode Inc/Cap (R)` = format(round(stat_mode(INCOME_PCP,  na.rm=TRUE)), big.mark=","),
+        `Mode Income (R)` = format(round(density_mode(INCOME,       na.rm=TRUE)), big.mark=","),
+        `Mode Exp. (R)`   = format(round(density_mode(EXPENDITURE,  na.rm=TRUE)), big.mark=","),
+        `Mode Inc/Cap (R)` = format(round(density_mode(INCOME_PCP,  na.rm=TRUE)), big.mark=","),
         .groups = "drop"
       )
   },
@@ -725,7 +723,7 @@ server <- function(input, output, session) {
   output$plt_hist <- renderPlot({
     req(filt()); df <- filt()
     cap  <- quantile(df$INCOME, 0.95, na.rm=TRUE)
-    med  <- stat_mode(df$INCOME[df$INCOME <= cap], na.rm=TRUE)
+    med  <- density_mode(df$INCOME[df$INCOME <= cap], na.rm=TRUE)
     df2  <- df[df$INCOME <= cap & !is.na(df$INCOME), ]
 
     ggplot(df2, aes(x=INCOME)) +
@@ -748,7 +746,7 @@ server <- function(input, output, session) {
     req(filt())
     filt() %>%
       group_by(Decile = factor(INCOME_DECILE)) %>%
-      summarise(Mode=stat_mode(INCOME, na.rm=TRUE), n=n(), .groups="drop") %>%
+      summarise(Mode=density_mode(INCOME, na.rm=TRUE), n=n(), .groups="drop") %>%
       ggplot(aes(x=Decile, y=Mode, fill=Decile)) +
       geom_col(colour="#3D2B1F", width=0.72, alpha=0.9) +
       geom_text(aes(label=paste0("R",format(round(Mode/1000), big.mark=","),"k")),
@@ -769,7 +767,7 @@ server <- function(input, output, session) {
       filter(INCOME <= cap) %>%
       mutate(Pop = dplyr::recode(as.character(HEAD_POPULATION),
                                  !!!pop_lbl, .default="Other")) %>%
-      ggplot(aes(x=reorder(Pop, INCOME, FUN=stat_mode), y=INCOME, fill=Pop)) +
+      ggplot(aes(x=reorder(Pop, INCOME, FUN=density_mode), y=INCOME, fill=Pop)) +
       geom_boxplot(colour="#3D2B1F", outlier.colour="#D4783E",
                    outlier.size=0.6, alpha=0.85, width=0.6) +
       scale_fill_manual(
@@ -789,7 +787,7 @@ server <- function(input, output, session) {
     filt() %>%
       filter(HSIZE <= 12, !is.na(INCOME_PCP)) %>%
       group_by(Size = HSIZE) %>%
-      summarise(med=stat_mode(INCOME_PCP, na.rm=TRUE), n=n(), .groups="drop") %>%
+      summarise(med=density_mode(INCOME_PCP, na.rm=TRUE), n=n(), .groups="drop") %>%
       ggplot(aes(x=Size, y=med)) +
       geom_area(fill="#A0522D30") +
       geom_line(colour="#A0522D", linewidth=1.4) +
@@ -817,7 +815,7 @@ server <- function(input, output, session) {
                                     !!!status_lbl, .default="Unknown")) %>%
       filter(Status %in% lvls) %>%
       group_by(Status) %>%
-      summarise(med=median(INCOME, na.rm=TRUE), n=n(), .groups="drop") %>%
+      summarise(med=density_mode(INCOME, na.rm=TRUE), n=n(), .groups="drop") %>%
       mutate(Status = factor(Status, levels=lvls)) %>%
       ggplot(aes(x=Status, y=med, fill=Status)) +
       geom_col(colour="#3D2B1F", width=0.65, alpha=0.92) +
@@ -827,7 +825,7 @@ server <- function(input, output, session) {
       scale_y_continuous(labels=label_dollar(prefix="R ", big.mark=",",
                                               scale=1e-3, suffix="k"),
                          expand=expansion(mult=c(0,0.14))) +
-      labs(x=NULL, y="Median Annual Income") +
+      labs(x=NULL, y="Mode Annual Income") +
       theme_mcm() +
       theme(axis.text.x=element_text(angle=22, hjust=1, size=10))
   }, bg="#F5E6D3")
