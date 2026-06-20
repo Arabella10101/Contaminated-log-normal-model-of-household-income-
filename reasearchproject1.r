@@ -8,7 +8,7 @@ library(tidyr)
 
 options(scipen = 999) #turn off sci notation 
 
-households_data <- read_csv("C:/Users/arabe/OneDrive/Documents/Research Project/Fact_IES2023_Households.csv")
+households_data <- read_csv("C:/Users/arabe/OneDrive/Documents/Research_Project/Fact_IES2023_Households.csv")
 
 household_income <- households_data %>% 
   select(INCOME, INCOME_PCP)

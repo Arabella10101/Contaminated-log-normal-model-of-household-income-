@@ -42,14 +42,21 @@ sigma <- 0.5
 lambda <- 5
 epsilon <- 0.6
 
-#check correct?
-x <- epsilon*rlnorm(n = n_samples, meanlog = log(m) + sigma, sdlog = sigma)+(1-epsilon)*rlnorm(n = n_samples, meanlog = log(m) + lambda*sigma, sdlog = lambda*sigma)
+#How many come from each distribution
+n1 <- 60000
+n2 <- 40000
+
+x1 <- rlnorm(n = n1, meanlog = log(m) + sigma, sdlog = sigma)
+x2 <- rlnorm(n = n2, meanlog = log(m) + lambda * sigma, sdlog = lambda * sigma)
+
+#Concat
+x <- c(x1, x2)
 
 dlnL2 <- function(par, x){
   m     <- exp(par[1]) 
   sigma <- exp(par[2])
-  lambda <- exp(par[3]) + 1 #bound lambda > 1 correct?
-  # Logit transformation to keep epsilon in (0, 1) correct?
+  lambda <- exp(par[3]) + 1 #bound lambda > 1
+  # Logit transformation to keep epsilon in (0, 1)
   epsilon <- 1 / (1 + exp(-par[4])) 
   
   return(sum(log(epsilon*dlnorm(x, meanlog=log(m)+sigma, sdlog=sigma) + (1-epsilon)*dlnorm(x, meanlog=log(m)+lambda*sigma, sdlog=lambda*sigma))))
@@ -94,8 +101,16 @@ colnames(results) <- c("m", "sigma", "lambda", "epsilon")
 
 for(i in 1:n_iterations) {
   # Generate a new random sample for each iteration
-  x_sim <- epsilon * rlnorm(n = n_samples, meanlog = log(m) + sigma, sdlog = sigma) +
-    (1 - epsilon) * rlnorm(n = n_samples, meanlog = log(m) + lambda*sigma, sdlog = lambda * sigma)
+  # Decide how many come from each distribution
+  n1 <- 60000
+  n2 <- 40000
+  
+  # Generate directly
+  x1 <- rlnorm(n = n1, meanlog = log(m) + sigma, sdlog = sigma)
+  x2 <- rlnorm(n = n2, meanlog = log(m) + lambda * sigma, sdlog = lambda * sigma)
+  
+  # Combine them into one single mixture vector of length 100,000
+  x_sim <- c(x1, x2)
   
   # Run optim with original start parameters
   est <- optim(par = start, fn = dlnL2, x = x_sim, control = list(fnscale = -1))

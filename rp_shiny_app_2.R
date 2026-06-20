@@ -314,7 +314,7 @@ ui <- fluidPage(
           tags$label("📂  CSV File Path"),
           textInput("csv_path",
                     label    = NULL,
-                    value    = "C:/Users/arabe/OneDrive/Documents/Research Project/Fact_IES2023_Households.csv",
+                    value    = "C:/Users/arabe/OneDrive/Documents/Research_Project/Fact_IES2023_Households.csv",
                     placeholder = "Full path to Fact_IES2023_Households.csv"),
           actionButton("load_btn", "⬆ Load Data", class = "btn-mcm")
         ),

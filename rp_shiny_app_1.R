@@ -5,7 +5,7 @@ library(DT)
 
 # --- GLOBAL SCOPE: Load data once ---
 # This runs only when the app starts
-households_data <- read_csv("C:/Users/arabe/OneDrive/Documents/Research Project/Fact_IES2023_Households.csv")
+households_data <- read_csv("C:/Users/arabe/OneDrive/Documents/Research_Project/Fact_IES2023_Households.csv")
 
 #Mid-Century Modern Theme
 my_theme <- bs_theme(
