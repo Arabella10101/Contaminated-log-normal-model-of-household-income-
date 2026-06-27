@@ -8,7 +8,7 @@ library(tidyr)
 
 options(scipen = 999) #turn off sci notation 
 
-households_data <- read_csv("C:/Users/arabe/OneDrive/Documents/Research_Project/Fact_IES2023_Households.csv")
+households_data <- read_csv("C:/Users/arabe/Documents/Research_Project/Fact_IES2023_Households.csv")
 
 household_income <- households_data %>% 
   select(INCOME, INCOME_PCP)
@@ -211,4 +211,40 @@ curve(mixture_pdf(x, m_est, sigma_est, lambda_est, epsilon_est),
 #legend
 legend("topright", legend = c("True Params", "Estimated Params"), 
        col = c("blue", "red"), lwd = 2, lty = c(1, 2))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#Histogram with ticks
+png("C:/Users/arabe/Documents/Research_Project/code/income_histogram.png",
+    width = 1200, height = 600, res = 150)
+
+hist(household_income$INCOME,
+     breaks = 50,
+     freq = FALSE,
+     main = "",
+     xlab = "Household Income (R)",
+     ylab = "Density",
+     col = "white",
+     border = "black",
+     ylim = c(0, 0.000006))
+
+rug(household_income$INCOME)
+
+dev.off()
+
 
