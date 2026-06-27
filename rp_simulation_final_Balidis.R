@@ -10,7 +10,7 @@ dlnL2 <- function(par, x){
   # Logit transformation to keep epsilon in (0, 1)
   epsilon <- 1 / (1 + exp(-par[4])) 
   
-  return(sum(log(epsilon*dlnorm(x, meanlog=log(m)+sigma, sdlog=sigma) + (1-epsilon)*dlnorm(x, meanlog=log(m)+lambda*sigma, sdlog=lambda*sigma))))
+  return(sum(log(epsilon*dlnorm(x, meanlog=log(m)+sigma^2, sdlog=sigma) + (1-epsilon)*dlnorm(x, meanlog=log(m)+lambda*sigma^2, sdlog=sqrt(lambda)*sigma))))
 }
 
 #fixed true values
@@ -38,8 +38,8 @@ for (n in n_vals) {
       
       for (r in seq_len(n_reps)) {
         
-        x1 <- rlnorm(n1, meanlog = log(m) + sigma,        sdlog = sigma)
-        x2 <- rlnorm(n2, meanlog = log(m) + lambda*sigma, sdlog = lambda*sigma)
+        x1 <- rlnorm(n1, meanlog = log(m) + sigma^2,        sdlog = sigma)
+        x2 <- rlnorm(n2, meanlog = log(m) + lambda*sigma^2, sdlog = sqrt(lambda)*sigma)
         x  <- c(x1, x2)
         
         best_val <- -Inf
@@ -47,15 +47,15 @@ for (n in n_vals) {
         
         for (s in seq_len(n_starts)) {
           
-          #The jitter multiplies each starting parameter by a random factor centered at 1 but varying roughly 0.3
+          #The shiftfact multiplies each starting parameter by a random factor centered at 1 but varying roughly 0.3
           #so each of the optimization attempts begin at a slightly different point
-          jitter <- if (s == 1) c(1, 1, 1, 1) else exp(rnorm(4, sd = 0.3))
+          shiftfact <- if (s == 1) c(1, 1, 1, 1) else exp(rnorm(4, sd = 0.3))
           
           start <- c(
-            log(m) * jitter[1],
-            log(sigma) * jitter[2],
-            log(max(lambda - 1, 0.01)) * jitter[3],
-            log(epsilon / (1 - epsilon)) * jitter[4]
+            log(m) * shiftfact[1],
+            log(sigma) * shiftfact[2],
+            log(max(lambda - 1, 0.01)) * shiftfact[3],
+            log(epsilon / (1 - epsilon)) * shiftfact[4]
           )
           
           est <- try(
@@ -123,10 +123,10 @@ raw_moment_lnorm <- function(k, meanlog, sdlog) {
 }
 
 cmLN_kurtosis <- function(sigma, lambda, epsilon) {
-  meanlog1 <- sigma
+  meanlog1 <- sigma^2
   sdlog1   <- sigma
-  meanlog2 <- lambda * sigma
-  sdlog2   <- lambda * sigma
+  meanlog2 <- lambda * sigma^2
+  sdlog2   <- sqrt(lambda) * sigma
   
   M <- sapply(1:4, function(k) {
     epsilon * raw_moment_lnorm(k, meanlog1, sdlog1) +
@@ -141,7 +141,7 @@ cmLN_kurtosis <- function(sigma, lambda, epsilon) {
 }
 
 LN_kurtosis <- function(sigma) {
-  exp(4*sigma^2) + 2*exp(3*sigma^2) + 3*exp(2*sigma^2) - 6
+  exp(4*sigma^2) + 2*exp(3*sigma^2) + 3*exp(2*sigma^2) - 6 + 3
 }
 
 sigma_seq <- seq(0.01, 2, length.out = 200)
@@ -150,7 +150,7 @@ epsilon_vals <- c(0.4, 0.5, 0.9)
 lambda_vals  <- c(2, 5, 10)
 
 #different epsilon
-png("C:/Users/arabe/Documents/Research_Project/code/cmLN_kurtosis_plots_a.png",
+png("C:/Users/arabe/Documents/Research_Project/Pictures/cmLN_kurtosis_plots_a.png",
     width = 700, height = 600, res = 150)
 par(mar = c(4, 4, 2, 1))
 
@@ -164,7 +164,7 @@ legend("topright", legend = c("LN", paste0("cmLN, \u03b5=", epsilon_vals)), lty 
 dev.off()
 
 #different lambda
-png("C:/Users/arabe/Documents/Research_Project/code/cmLN_kurtosis_plots_b.png",
+png("C:/Users/arabe/Documents/Research_Project/Pictures/cmLN_kurtosis_plots_b.png",
     width = 700, height = 600, res = 150)
 par(mar = c(4, 4, 2, 1))
 
@@ -197,7 +197,7 @@ x_seq <- seq(0.01, 20, length.out = 500)
 sigma_fixed <- 0.5
 m_vals <- c(1, 3, 6)
 
-png("C:/Users/arabe/Documents/Research_Project/code/mLN_density_modes.png",
+png("C:/Users/arabe/Documents/Research_Project/Pictures/mLN_density_modes.png",
     width = 700, height = 600, res = 150)
 par(mar = c(4, 4, 2, 1))
 
@@ -214,7 +214,7 @@ dev.off()
 m_fixed <- 3
 sigma_vals <- c(0.25, 0.5, 1)
 
-png("C:/Users/arabe/Documents/Research_Project/code/mLN_density_sigmas.png",
+png("C:/Users/arabe/Documents/Research_Project/Pictures/mLN_density_sigmas.png",
     width = 700, height = 600, res = 150)
 par(mar = c(4, 4, 2, 1))
 

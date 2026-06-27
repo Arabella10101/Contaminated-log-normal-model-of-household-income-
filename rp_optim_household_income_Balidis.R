@@ -3,6 +3,7 @@ options(scipen = 999) #turn off sci notation
 
 library(readr)
 library(dplyr)
+library(moments)
 
 households_data <- read_csv("C:/Users/arabe/Documents/Research_Project/Fact_IES2023_Households.csv")
 
@@ -11,13 +12,25 @@ household_income <- households_data %>%
 
 summary(household_income)
 
+desc_stats <- data.frame(
+  n        = length(household_income$INCOME),
+  Mean     = mean(household_income$INCOME),
+  SD       = sd(household_income$INCOME),
+  Skewness = skewness(household_income$INCOME),
+  Kurtosis = kurtosis(household_income$INCOME),   # raw/Pearson kurtosis
+  Min      = min(household_income$INCOME),
+  Max      = max(household_income$INCOME)
+)
+
+print(desc_stats)
+
 dlnL2 <- function(par, x){
   m     <- exp(par[1]) 
   sigma <- exp(par[2])
   lambda <- exp(par[3])+1
   epsilon <- 1 / (1 + exp(-par[4])) 
   
-  return(sum(log(epsilon*dlnorm(x, meanlog=log(m)+sigma, sdlog=sigma) + (1-epsilon)*dlnorm(x, meanlog=log(m)+lambda*sigma, sdlog=lambda*sigma))))
+  return(sum(log(epsilon*dlnorm(x, meanlog=log(m)+sigma^2, sdlog=sigma) + (1-epsilon)*dlnorm(x, meanlog=log(m)+lambda*sigma^2, sdlog=sqrt(lambda)*sigma))))
 }
 
 

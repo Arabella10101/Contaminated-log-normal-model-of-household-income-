@@ -46,8 +46,8 @@ epsilon <- 0.6
 n1 <- 60000
 n2 <- 40000
 
-x1 <- rlnorm(n = n1, meanlog = log(m) + sigma, sdlog = sigma)
-x2 <- rlnorm(n = n2, meanlog = log(m) + lambda * sigma, sdlog = lambda * sigma)
+x1 <- rlnorm(n = n1, meanlog = log(m) + sigma^2, sdlog = sigma)
+x2 <- rlnorm(n = n2, meanlog = log(m) + lambda * sigma^2, sdlog = sqrt(lambda) * sigma)
 
 #Concat
 x <- c(x1, x2)
@@ -59,7 +59,7 @@ dlnL2 <- function(par, x){
   # Logit transformation to keep epsilon in (0, 1)
   epsilon <- 1 / (1 + exp(-par[4])) 
   
-  return(sum(log(epsilon*dlnorm(x, meanlog=log(m)+sigma, sdlog=sigma) + (1-epsilon)*dlnorm(x, meanlog=log(m)+lambda*sigma, sdlog=lambda*sigma))))
+  return(sum(log(epsilon*dlnorm(x, meanlog=log(m)+sigma^2, sdlog=sigma) + (1-epsilon)*dlnorm(x, meanlog=log(m)+lambda*sigma^2, sdlog=sqrt(lambda)*sigma))))
 }
 
 # initialization 
@@ -74,7 +74,7 @@ final_params[4] <- 1 / (1 + exp(-est$par[4])) # Apply inverse logit for epsilon
 print(final_params)
 print(est$convergence) #it converges
 
-#so it doesnt work better when i just use mu 
+#final params 2 is just sigma
 
 #Define true parameters on the log-scale
 true_pars <- c(log(m), log(sigma), log(lambda-1), log(epsilon / (1 - epsilon)))
@@ -82,9 +82,6 @@ true_pars <- c(log(m), log(sigma), log(lambda-1), log(epsilon / (1 - epsilon)))
 # 2. Compare the Log-Likelihoods
 cat("Log-Likelihood with TRUE parameters:", dlnL2(true_pars, x), "\n")
 cat("Log-Likelihood with OPTIMIZED parameters:", est$value, "\n")
-
-#via troubleshooting why not giving close results to initial parameters 
-#opt > true then optim found parameters that better map the sample then org
 
 
 
@@ -106,8 +103,8 @@ for(i in 1:n_iterations) {
   n2 <- 40000
   
   # Generate directly
-  x1 <- rlnorm(n = n1, meanlog = log(m) + sigma, sdlog = sigma)
-  x2 <- rlnorm(n = n2, meanlog = log(m) + lambda * sigma, sdlog = lambda * sigma)
+  x1 <- rlnorm(n = n1, meanlog = log(m) + sigma^2, sdlog = sigma)
+  x2 <- rlnorm(n = n2, meanlog = log(m) + lambda * sigma^2, sdlog = sqrt(lambda) * sigma)
   
   # Combine them into one single mixture vector of length 100,000
   x_sim <- c(x1, x2)
