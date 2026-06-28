@@ -60,15 +60,15 @@ print(final_params)
 print(est$convergence)
 
 
-#Define the number of steps and the "nudge" magnitude
+# Define the number of steps and the "nudge" magnitude
 n_steps <- 50
 lambda_step <- 0.1   # Increase lambda by 0.1 each time
-eps_step   <- -0.01 # Decrease epsilon by 0.01 each time
+eps_step   <- -0.01  # Decrease epsilon by 0.01 each time
 
-results <- matrix(NA, nrow = n_steps, ncol = 6)
-colnames(results) <- c("m", "sigma", "lambda", "epsilon","curr lambda", "curr epsilon")
+results <- matrix(NA, nrow = n_steps, ncol = 7)
+colnames(results) <- c("m", "sigma", "lambda", "epsilon", "curr lambda", "curr epsilon", "logLik")
 
-#Starting baseline
+# Starting baseline
 base_lambda <- 1
 base_eps   <- 0.99
 
@@ -80,17 +80,22 @@ for(i in 1:n_steps) {
   # Ensure epsilon stays within bounds (0, 1) to avoid math errors
   curr_E <- max(0.01, min(0.99, curr_E))
   
-  init_pars <- c(log(start_m), log(start_sigma), log(curr_L-1), log(curr_E / (1 - curr_E)))
+  init_pars <- c(log(start_m), log(start_sigma), log(curr_L - 1), log(curr_E / (1 - curr_E)))
   
   est <- optim(par = init_pars, fn = dlnL2, x = household_income$INCOME, control = list(fnscale = -1))
   
   params <- exp(est$par)
-  params[3] <- exp(est$par[3])+1
+  params[3] <- exp(est$par[3]) + 1
   params[4] <- 1 / (1 + exp(-est$par[4]))
-  results[i, ] <- c(params, curr_L, curr_E)
+  
+  results[i, ] <- c(params, curr_L, curr_E, est$value)
 }
 
-print(results)
+# Pick the row with the highest log-likelihood
+best_idx <- which.max(results[, "logLik"])
+best_result <- results[best_idx, ]
+
+best_result
 
 
 #using previously estimated parameters as new start to check convergence
