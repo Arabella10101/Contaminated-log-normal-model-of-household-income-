@@ -189,9 +189,25 @@ body {
   border-color: #A0522D;
   box-shadow: 0 0 0 2px #D4783E30;
 }
-.irs--shiny .irs-bar { background:#A0522D; border-top:1px solid #A0522D; border-bottom:1px solid #A0522D; }
-.irs--shiny .irs-handle { background:#D4783E; border:2px solid #A0522D; }
-.irs--shiny .irs-from, .irs--shiny .irs-to, .irs--shiny .irs-single { background:#6B4226; }
+.irs--shiny .irs-bar {
+  background: #2E5A3E !important;
+  border-top: 1px solid #2E5A3E !important;
+  border-bottom: 1px solid #2E5A3E !important;
+}
+.irs--shiny .irs-handle {
+  background: #4C8058 !important;
+  border: 2px solid #2E5A3E !important;
+  box-shadow: none !important;
+}
+.irs--shiny .irs-handle > i:first-child { background: #FAF3EA !important; }
+.irs--shiny .irs-from, .irs--shiny .irs-to, .irs--shiny .irs-single {
+  background: #1F3D28 !important;
+}
+.irs--shiny .irs-from:before, .irs--shiny .irs-to:before, .irs--shiny .irs-single:before {
+  border-top-color: #1F3D28 !important;
+}
+.irs--shiny .irs-min, .irs--shiny .irs-max { background: #EDD9C0 !important; color: #6B4226 !important; }
+.irs--shiny .irs-line { background: #D9C4A5 !important; border-color: #C4956A !important; }
 
 /* ── Buttons ── */
 .btn-mcm {
@@ -283,7 +299,7 @@ body {
 /* ── Badge ── */
 .n-badge {
   display: inline-block;
-  background-color: #D4783E;
+  background-color: #2E5A3E;
   color: #FAF3EA;
   font-size: 11px;
   font-weight: 700;
@@ -338,12 +354,53 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
 /* ── Main content ── */
 .main-content { padding: 18px 22px; height: 100%; overflow-y: auto; }
 .record-bar { margin-bottom: 16px; padding: 8px 0; border-bottom: 1px solid #C4956A40; }
+
+/* ── Splash / start screen ── */
+.splash-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background-color: #F5E6D3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  transition: opacity 0.6s ease;
+}
+.splash-overlay.splash-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.splash-start-btn {
+  width: auto;
+  padding: 14px 52px;
+  font-size: 16px;
+  letter-spacing: 1.5px;
+  border: 2px solid #2E5A3E;
+}
+.splash-start-btn:hover { background-color: #2E5A3E; border-color: #2E5A3E; }
 "
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 ui <- fluidPage(
   title = "IES 2022/23 Income Explorer",
   tags$head(tags$style(HTML(mcm_css))),
+
+  # ── Splash / start screen ──
+  div(id = "splash-overlay", class = "splash-overlay",
+    tags$button(id = "splash-start-btn", class = "btn-mcm splash-start-btn", "Start")
+  ),
+  tags$script(HTML("
+    (function(){
+      var startBtn = document.getElementById('splash-start-btn');
+      var overlay  = document.getElementById('splash-overlay');
+
+      startBtn.addEventListener('click', function(){
+        overlay.classList.add('splash-hidden');
+        setTimeout(function(){ overlay.style.display = 'none'; }, 650);
+      });
+    })();
+  ")),
 
   # ── App header ──
   div(class = "app-header",
