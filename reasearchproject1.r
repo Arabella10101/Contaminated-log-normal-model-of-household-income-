@@ -230,7 +230,7 @@ legend("topright", legend = c("True Params", "Estimated Params"),
 
 
 #Histogram with ticks
-png("C:/Users/arabe/Documents/Research_Project/code/income_histogram.png",
+png("C:/Users/arabe/Documents/Research_Project/Pictures/income_histogram.png",
     width = 1200, height = 600, res = 150)
 
 hist(household_income$INCOME,
