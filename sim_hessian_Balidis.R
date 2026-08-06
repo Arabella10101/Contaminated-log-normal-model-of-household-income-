@@ -1,4 +1,4 @@
-#redo of sim using aitken to select params
+#sim using a Hessian check to select params
 set.seed(123)
 
 dlnL2 <- function(par, x){
@@ -76,48 +76,44 @@ get_start <- function(x, jitter_sd = 0.5){
 }
 
 # ---------------------------------------------------------------------------
-# Aitken's delta-squared acceleration, applied to the running-best
-# log-likelihood across successive multi-start attempts. Extrapolates where
-# that sequence is heading so we can stop early once it's flattened out.
+# Check that a converged solution is a genuine local maximum, not a saddle
+# point or flat region optim stopped at prematurely.
+#
+# optim() is called with fnscale = -1, so internally it MINIMIZES -dlnL2(par).
+# The Hessian it returns is therefore the Hessian of -loglik at the solution.
+# At a true maximum of the log-likelihood, -loglik is locally convex there,
+# so that Hessian should be positive definite (all eigenvalues > 0).
 # ---------------------------------------------------------------------------
-aitken_accelerate <- function(l_prev, l_curr, l_next){
-  denom <- l_curr - l_prev
-  if (abs(denom) < 1e-10) return(l_next)
-  a_t <- (l_next - l_curr) / denom
-  if (abs(1 - a_t) < 1e-10) return(l_next)
-  l_curr + (l_next - l_curr) / (1 - a_t)
+is_valid_maximum <- function(hess, tol = 1e-8){
+  if (is.null(hess) || any(!is.finite(hess))) return(FALSE)
+  eig <- eigen(hess, symmetric = TRUE, only.values = TRUE)$values
+  all(is.finite(eig)) && all(eig > tol)
 }
 
 # ---------------------------------------------------------------------------
 # Multi-start optimizer: call optim() on the full likelihood from several
-# random starts, tracking the best result found so far. Uses Aitken
-# acceleration on the running-best log-likelihood to stop early once
-# additional starts stop meaningfully improving it.
+# random starts, tracking the best result found so far. A start only becomes
+# the new "best" if it (a) has a higher log-likelihood AND (b) passes the
+# Hessian check above — i.e. it's a genuine local maximum, not a spurious
+# stopping point.
 # ---------------------------------------------------------------------------
-fit_multistart <- function(x, n_starts, tol = 1e-4){
+fit_multistart <- function(x, n_starts){
   best_val <- -Inf
   best_par <- rep(NA_real_, 4)
-  running_best <- numeric(0)
   
   for (s in seq_len(n_starts)){
     par0 <- get_start(x)
     
     fit <- tryCatch(
       optim(par0, dlnL2, x = x, method = "BFGS",
-            control = list(fnscale = -1, maxit = 1000)),
+            control = list(fnscale = -1, maxit = 1000), hessian = TRUE),
       error = function(e) NULL
     )
     
-    if (!is.null(fit) && fit$convergence == 0 && is.finite(fit$value) && fit$value > best_val){
+    if (!is.null(fit) && fit$convergence == 0 && is.finite(fit$value) &&
+        fit$value > best_val && is_valid_maximum(fit$hessian)){
       best_val <- fit$value
       best_par <- fit$par
-    }
-    
-    running_best[s] <- best_val
-    
-    if (s >= 3){
-      l_inf <- aitken_accelerate(running_best[s-2], running_best[s-1], running_best[s])
-      if (abs(l_inf - running_best[s]) < tol) break   # extrapolated limit stopped moving; stop early
     }
   }
   
