@@ -1,16 +1,28 @@
 #contaminated model simulation
-library(moments) 
-
+library(moments)
 set.seed(123)
 
 dlnL2 <- function(par, x){
-  m     <- exp(par[1]) 
-  sigma <- exp(par[2])
-  lambda <- exp(par[3]) + 1 #bound lambda > 1
-  # Logit transformation to keep epsilon in (0, 1)
-  epsilon <- 1 / (1 + exp(-par[4])) 
+  m      <- exp(par[1])
+  sigma  <- exp(par[2])
+  lambda <- exp(par[3]) + 1              # bound lambda > 1
+  epsilon <- 1 / (1 + exp(-par[4]))      # logit -> (0,1)
   
-  return(sum(log(epsilon*dlnorm(x, meanlog=log(m)+sigma^2, sdlog=sigma) + (1-epsilon)*dlnorm(x, meanlog=log(m)+lambda*sigma^2, sdlog=sqrt(lambda)*sigma))))
+  return(sum(log(
+    epsilon * dlnorm(x, meanlog = log(m) + sigma^2, sdlog = sigma) +
+    (1-epsilon) * dlnorm(x, meanlog = log(m) + lambda*sigma^2, sdlog = sqrt(lambda)*sigma)
+  )))
+}
+
+# --- helper: fit a plain (uncontaminated) lognormal via closed-form MLE,
+#     then re-express (meanlog, sdlog) in the "mode" parameterization
+#     used by dlnL2, i.e. meanlog = log(m) + sigma^2  =>  m = exp(meanlog - sigma^2)
+fit_lnorm_mode <- function(x){
+  meanlog_hat <- mean(log(x))
+  sdlog_hat   <- sd(log(x))
+  m_start     <- exp(meanlog_hat - sdlog_hat^2)
+  sigma_start <- sdlog_hat
+  list(m_start = m_start, sigma_start = sigma_start)
 }
 
 #fixed true values
@@ -21,12 +33,19 @@ sigma <- 0.5
 n_vals       <- c(100, 1000, 10000)
 lambda_vals  <- c(2, 5)
 epsilon_vals <- c(0.6, 0.9)
-n_reps       <- 100
-n_starts     <- 5   
+n_reps       <- 500
 
-results <- list()
+# grid of starting values for lambda (increasing from 1.01) and
+# epsilon (decreasing from 0.99); paired element-wise across starts
+lambda_starts  <- c(1.01, 1.1, 1.5, 2, 3, 5, 8)
+epsilon_starts <- c(0.99, 0.95, 0.9, 0.8, 0.7, 0.6, 0.5)
+n_starts <- length(lambda_starts)
+stopifnot(length(epsilon_starts) == n_starts)
 
-for (n in n_vals) {
+results     <- list()
+summary_rows <- list()   # accumulate bias/MSE rows using known true values
+
+for (n in n_vals) { 
   for (lambda in lambda_vals) {
     for (epsilon in epsilon_vals) {
       
@@ -38,24 +57,29 @@ for (n in n_vals) {
       
       for (r in seq_len(n_reps)) {
         
-        x1 <- rlnorm(n1, meanlog = log(m) + sigma^2,        sdlog = sigma)
+        # --- new dataset every replicate ---
+        x1 <- rlnorm(n1, meanlog = log(m) + sigma^2, sdlog = sigma)
         x2 <- rlnorm(n2, meanlog = log(m) + lambda*sigma^2, sdlog = sqrt(lambda)*sigma)
         x  <- c(x1, x2)
+        
+        # --- data-driven start for m, sigma from a plain lognormal fit ---
+        lnorm_fit   <- fit_lnorm_mode(x)
+        m_start     <- lnorm_fit$m_start
+        sigma_start <- lnorm_fit$sigma_start
         
         best_val <- -Inf
         best_par <- NULL
         
         for (s in seq_len(n_starts)) {
           
-          #The shiftfact multiplies each starting parameter by a random factor centered at 1 but varying roughly 0.3
-          #so each of the optimization attempts begin at a slightly different point
-          shiftfact <- if (s == 1) c(1, 1, 1, 1) else exp(rnorm(4, sd = 0.3))
+          lam0 <- lambda_starts[s]
+          eps0 <- epsilon_starts[s]
           
           start <- c(
-            log(m) * shiftfact[1],
-            log(sigma) * shiftfact[2],
-            log(max(lambda - 1, 0.01)) * shiftfact[3],
-            log(epsilon / (1 - epsilon)) * shiftfact[4]
+            log(m_start),
+            log(sigma_start),
+            log(lam0 - 1),
+            log(eps0 / (1 - eps0))
           )
           
           est <- try(
@@ -70,7 +94,7 @@ for (n in n_vals) {
         }
         
         #extract params and back transform
-        final_params <- exp(best_par)
+        final_params    <- exp(best_par)
         final_params[3] <- exp(best_par[3]) + 1
         final_params[4] <- 1 / (1 + exp(-best_par[4]))
         
@@ -80,26 +104,46 @@ for (n in n_vals) {
       key <- sprintf("n=%d_lambda=%g_epsilon=%g", n, lambda, epsilon)
       results[[key]] <- rep_results
       cat("Done:", key, "\n")
+      
+      # --- bias & MSE against the true (m, sigma, lambda, epsilon) for this scenario ---
+      m_hat       <- rep_results[, "m_hat"]
+      sigma_hat   <- rep_results[, "sigma_hat"]
+      lambda_hat  <- rep_results[, "lambda_hat"]
+      epsilon_hat <- rep_results[, "epsilon_hat"]
+      
+      summary_rows[[key]] <- data.frame(
+        scenario      = key,
+        n             = n,
+        lambda_true   = lambda,
+        epsilon_true  = epsilon,
+        
+        m_mean        = mean(m_hat),
+        sigma_mean    = mean(sigma_hat),
+        lambda_mean   = mean(lambda_hat),
+        epsilon_mean  = mean(epsilon_hat),
+        
+        m_sd          = sd(m_hat),
+        sigma_sd      = sd(sigma_hat),
+        lambda_sd     = sd(lambda_hat),
+        epsilon_sd    = sd(epsilon_hat),
+        
+        m_bias        = mean(m_hat)       - m,
+        sigma_bias    = mean(sigma_hat)   - sigma,
+        lambda_bias   = mean(lambda_hat)  - lambda,
+        epsilon_bias  = mean(epsilon_hat) - epsilon,
+        
+        m_mse         = mean((m_hat       - m)^2),
+        sigma_mse     = mean((sigma_hat   - sigma)^2),
+        lambda_mse    = mean((lambda_hat  - lambda)^2),
+        epsilon_mse   = mean((epsilon_hat - epsilon)^2)
+      )
     }
   }
 }
 
-##summary across the 100 replicates per scenario
-summary_table <- do.call(rbind, lapply(names(results), function(key) {
-  mat <- results[[key]]
-  data.frame(
-    scenario     = key,
-    m_mean       = mean(mat[, "m_hat"]),
-    sigma_mean   = mean(mat[, "sigma_hat"]),
-    lambda_mean  = mean(mat[, "lambda_hat"]),
-    epsilon_mean = mean(mat[, "epsilon_hat"]),
-    m_sd         = sd(mat[, "m_hat"]),
-    sigma_sd     = sd(mat[, "sigma_hat"]),
-    lambda_sd    = sd(mat[, "lambda_hat"]),
-    epsilon_sd   = sd(mat[, "epsilon_hat"])
-  )
-}))
-
+##summary across the 1000 replicates per scenario (now with bias & MSE)
+summary_table <- do.call(rbind, summary_rows)
+rownames(summary_table) <- NULL
 print(summary_table)
 
 #best parameter set (highest log likelihood) per scenario
@@ -108,8 +152,120 @@ best_table <- do.call(rbind, lapply(names(results), function(key) {
   best_row <- mat[which.max(mat[, "logLik"]), ]
   data.frame(scenario = key, t(best_row))
 }))
-
 print(best_table)
+
+
+#retry with diff optim method
+
+for (n in n_vals) { 
+  for (lambda in lambda_vals) {
+    for (epsilon in epsilon_vals) {
+      
+      n1 <- round(n * epsilon)
+      n2 <- n - n1
+      
+      rep_results <- matrix(NA, nrow = n_reps, ncol = 5)
+      colnames(rep_results) <- c("m_hat", "sigma_hat", "lambda_hat", "epsilon_hat", "logLik")
+      
+      for (r in seq_len(n_reps)) {
+        
+        # --- new dataset every replicate ---
+        x1 <- rlnorm(n1, meanlog = log(m) + sigma^2, sdlog = sigma)
+        x2 <- rlnorm(n2, meanlog = log(m) + lambda*sigma^2, sdlog = sqrt(lambda)*sigma)
+        x  <- c(x1, x2)
+        
+        # --- data-driven start for m, sigma from a plain lognormal fit ---
+        lnorm_fit   <- fit_lnorm_mode(x)
+        m_start     <- lnorm_fit$m_start
+        sigma_start <- lnorm_fit$sigma_start
+        
+        best_val <- -Inf
+        best_par <- NULL
+        
+        for (s in seq_len(n_starts)) {
+          
+          lam0 <- lambda_starts[s]
+          eps0 <- epsilon_starts[s]
+          
+          start <- c(
+            log(m_start),
+            log(sigma_start),
+            log(lam0 - 1),
+            log(eps0 / (1 - eps0))
+          )
+          
+          est <- try(
+            optim(par = start, fn = dlnL2, x = x, control = list(fnscale = -1), method = "BFGS"),
+            silent = TRUE
+          )
+          
+          if (!inherits(est, "try-error") && est$value > best_val) {
+            best_val <- est$value
+            best_par <- est$par
+          }
+        }
+        
+        #extract params and back transform
+        final_params    <- exp(best_par)
+        final_params[3] <- exp(best_par[3]) + 1
+        final_params[4] <- 1 / (1 + exp(-best_par[4]))
+        
+        rep_results[r, ] <- c(final_params, best_val)
+      }
+      
+      key <- sprintf("n=%d_lambda=%g_epsilon=%g", n, lambda, epsilon)
+      results[[key]] <- rep_results
+      cat("Done:", key, "\n")
+      
+      # --- bias & MSE against the true (m, sigma, lambda, epsilon) for this scenario ---
+      m_hat       <- rep_results[, "m_hat"]
+      sigma_hat   <- rep_results[, "sigma_hat"]
+      lambda_hat  <- rep_results[, "lambda_hat"]
+      epsilon_hat <- rep_results[, "epsilon_hat"]
+      
+      summary_rows[[key]] <- data.frame(
+        scenario      = key,
+        n             = n,
+        lambda_true   = lambda,
+        epsilon_true  = epsilon,
+        
+        m_mean        = mean(m_hat),
+        sigma_mean    = mean(sigma_hat),
+        lambda_mean   = mean(lambda_hat),
+        epsilon_mean  = mean(epsilon_hat),
+        
+        m_sd          = sd(m_hat),
+        sigma_sd      = sd(sigma_hat),
+        lambda_sd     = sd(lambda_hat),
+        epsilon_sd    = sd(epsilon_hat),
+        
+        m_bias        = mean(m_hat)       - m,
+        sigma_bias    = mean(sigma_hat)   - sigma,
+        lambda_bias   = mean(lambda_hat)  - lambda,
+        epsilon_bias  = mean(epsilon_hat) - epsilon,
+        
+        m_mse         = mean((m_hat       - m)^2),
+        sigma_mse     = mean((sigma_hat   - sigma)^2),
+        lambda_mse    = mean((lambda_hat  - lambda)^2),
+        epsilon_mse   = mean((epsilon_hat - epsilon)^2)
+      )
+    }
+  }
+}
+
+##summary across the 1000 replicates per scenario (now with bias & MSE)
+summary_table <- do.call(rbind, summary_rows)
+rownames(summary_table) <- NULL
+print(summary_table)
+
+#best parameter set (highest log likelihood) per scenario
+best_table <- do.call(rbind, lapply(names(results), function(key) {
+  mat <- results[[key]]
+  best_row <- mat[which.max(mat[, "logLik"]), ]
+  data.frame(scenario = key, t(best_row))
+}))
+print(best_table)
+
 
 
 
