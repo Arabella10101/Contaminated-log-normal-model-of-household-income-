@@ -168,16 +168,20 @@ for (n in n_vals) {
         
         # ---- which model does AIC / BIC prefer for this replicate? ----
         # (only compared when all three models produced a finite value)
-        aic_vals <- c(single = AIC_s, mix_reg = AIC_mix_reg, mix_mode = AIC_mix_mode)
-        bic_vals <- c(single = BIC_s, mix_reg = BIC_mix_reg, mix_mode = BIC_mix_mode)
+        aic_vals <- c(single = unname(AIC_s), mix_reg = unname(AIC_mix_reg), mix_mode = unname(AIC_mix_mode))
+        bic_vals <- c(single = unname(BIC_s), mix_reg = unname(BIC_mix_reg), mix_mode = unname(BIC_mix_mode))
         
         aic_winner_vec[r] <- if (all(is.finite(aic_vals))) names(aic_vals)[which.min(aic_vals)] else NA_character_
         bic_winner_vec[r] <- if (all(is.finite(bic_vals))) names(bic_vals)[which.min(bic_vals)] else NA_character_
-      }
+        #if (r <= 5) cat("rep", r, "aic_vals:", aic_vals, "| names:", names(aic_vals), "| winner:", aic_winner_vec[r], "\n") 
+        }
       
       key <- sprintf("n=%d_lambda=%g_epsilon=%g", n, lambda, epsilon)
       results[[key]] <- rep_results
       cat("Done:", key, "\n")
+      
+      saveRDS(results, "results_checkpoint.rds")
+      saveRDS(summary_rows, "summary_rows_checkpoint.rds")
       
       best_rep_idx <- which.max(rep_results[, "logLik"])
       cat(sprintf("  best mixture (reg) fit for this scenario (replicate %d/%d): m=%.3f sigma=%.3f lambda=%.3f epsilon=%.3f logLik=%.2f\n",
@@ -300,9 +304,46 @@ for (n in n_vals) {
     }
   }
 }
-
 summary_df <- do.call(rbind, summary_rows)
 print(summary_df)
+
+# =============================================================================
+# Post-hoc: report sigma^2 instead of sigma. Recomputed from the raw
+# per-replicate sigma_hat already stored in `results` -- NOT a re-run of the
+# simulation, and NOT just squaring the existing summary stats (mean(sigma^2)
+# != mean(sigma)^2, same issue for bias/MSE).
+# =============================================================================
+sigma2_true <- sigma^2   # sigma <- 0.5 above, so sigma2_true = 0.25
+
+for (key in names(results)) {
+  sigma_hat  <- results[[key]][, "sigma_hat"]
+  sigma2_hat <- sigma_hat^2
+  
+  summary_rows[[key]]$sigma_mean <- mean(sigma2_hat, na.rm = TRUE)
+  summary_rows[[key]]$sigma_sd   <- sd(sigma2_hat, na.rm = TRUE)
+  summary_rows[[key]]$sigma_bias <- mean(sigma2_hat, na.rm = TRUE) - sigma2_true
+  summary_rows[[key]]$sigma_mse  <- mean((sigma2_hat - sigma2_true)^2, na.rm = TRUE)
+}
+
+summary_df <- do.call(rbind, summary_rows)
+
+# =============================================================================
+# Sanity check -- AIC/BIC win-rates must sum to 1 for every scenario (each
+# replicate is assigned to exactly one of the three models). Checked on the
+# unrounded summary_df, before any export formatting.
+# =============================================================================
+if (anyNA(summary_df$aic_win_single) || anyNA(summary_df$aic_win_mix_reg) || anyNA(summary_df$aic_win_mix_mode)) {
+  stop("NA in aic_win_* columns -- n_valid_aic == 0 for some scenario, check convergence")
+}
+if (anyNA(summary_df$bic_win_single) || anyNA(summary_df$bic_win_mix_reg) || anyNA(summary_df$bic_win_mix_mode)) {
+  stop("NA in bic_win_* columns -- n_valid_bic == 0 for some scenario, check convergence")
+}
+stopifnot(all(abs(
+  summary_df$aic_win_single + summary_df$aic_win_mix_reg + summary_df$aic_win_mix_mode - 1
+) < 1e-8))
+stopifnot(all(abs(
+  summary_df$bic_win_single + summary_df$bic_win_mix_reg + summary_df$bic_win_mix_mode - 1
+) < 1e-8))
 
 # =============================================================================
 # FINAL SUMMARY -- only the final chosen values per scenario, written to xlsx
@@ -331,18 +372,43 @@ diagnostics_table[, 5:10] <- round(diagnostics_table[, 5:10], 5)
 out_path <- "contaminated_lognormal_final_summary.xlsx"
 write_xlsx(list(summary = final_table, diagnostics = diagnostics_table), out_path)
 cat("\nFinal summary (sheet 'summary') and reg-vs-mode gap diagnostics (sheet 'diagnostics') written to:", out_path, "\n")
+           
+# =============================================================================
+# PLOTS -- reads the final summary directly from the xlsx file, renders
+# EVERYTHING in black & white only (no color anywhere). Groups are
+# distinguished by linetype + point shape (line plots) or greyscale fill +
+# black outline (bar plots) instead of color. Backgrounds are white.
+#
+# NOTE: the "sigma" columns in the xlsx now hold sigma^2 (recomputed
+# post-hoc from the raw per-replicate fits -- see the sim script). Labels
+# below say "sigma^2" accordingly; no column-name changes needed.
+# =============================================================================
 
-# =============================================================================
-# PLOTS -- visual counterparts to the tables above, saved as PNGs for the main
-# text. The full numeric tables still go into the xlsx above for the appendix.
-# =============================================================================
+library(readxl)
+library(ggplot2)
+
+xlsx_path <- "contaminated_lognormal_final_summary.xlsx"
+
+summary_df <- read_excel(xlsx_path, sheet = "summary")
+
 dir.create("plots", showWarnings = FALSE)
+
+# ---- white background, black-and-white theme ----
+bw_theme <- theme_minimal() + theme(
+  panel.background  = element_rect(fill = "white", colour = NA),
+  plot.background   = element_rect(fill = "white", colour = NA),
+  legend.background = element_rect(fill = "white", colour = NA),
+  strip.background  = element_rect(fill = "white", colour = "black"),
+  panel.grid.major  = element_line(colour = "grey85"),
+  panel.grid.minor  = element_line(colour = "grey92"),
+  panel.border      = element_rect(colour = "black", fill = NA, linewidth = 0.3)
+)
 
 lambda_f <- function(df) factor(paste0("lambda=", df$lambda_true))
 epsilon_f <- function(df) factor(paste0("epsilon=", df$epsilon_true))
 scenario_label <- function(df) paste0("lambda=", df$lambda_true, ", eps=", df$epsilon_true)
 
-# ---- 1. Convergence rate ----
+# ---- 1. Convergence rate (2 groups: Regular, Mode) ----
 conv_df <- rbind(
   data.frame(n = summary_df$n, lambda_true = summary_df$lambda_true, epsilon_true = summary_df$epsilon_true,
              parameterization = "Regular", conv_rate = summary_df$conv_rate_reg),
@@ -352,48 +418,66 @@ conv_df <- rbind(
 conv_df$lambda_f  <- lambda_f(conv_df)
 conv_df$epsilon_f <- epsilon_f(conv_df)
 
-p_conv <- ggplot(conv_df, aes(x = factor(n), y = conv_rate, color = parameterization, group = parameterization)) +
-  geom_line() + geom_point(size = 2) +
+p_conv <- ggplot(conv_df, aes(x = factor(n), y = conv_rate,
+                              linetype = parameterization, shape = parameterization,
+                              group = parameterization)) +
+  geom_line(color = "black") + geom_point(color = "black", size = 2.2, fill = "white") +
+  scale_linetype_manual(values = c("Regular" = "solid", "Mode" = "dashed")) +
+  scale_shape_manual(values = c("Regular" = 16, "Mode" = 21)) +
   facet_grid(lambda_f ~ epsilon_f) +
-  labs(title = "Mixture-model convergence rate by sample size",
-       x = "n", y = "Proportion of replicates with a valid fit", color = "Parameterization") +
+  labs(x = "n", y = "Proportion of replicates with a valid fit",
+       linetype = "Parameterization", shape = "Parameterization") +
   ylim(0, 1) +
-  theme_minimal()
-ggsave("plots/convergence_rate.png", p_conv, width = 8, height = 6, dpi = 150)
+  bw_theme
+ggsave("plots/convergence_rate.png", p_conv, width = 8, height = 6, dpi = 150, bg = "white")
 
-# ---- 2. Bias by parameter ----
+# ---- 2. Bias by parameter (4 scenario lines, black & white) ----
 bias_df <- rbind(
-  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "m",       bias = summary_df$m_bias),
-  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "sigma",   bias = summary_df$sigma_bias),
-  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "lambda",  bias = summary_df$lambda_bias),
-  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "epsilon", bias = summary_df$epsilon_bias)
+  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "m",         bias = summary_df$m_bias),
+  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "sigma^2",   bias = summary_df$sigma_bias),
+  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "lambda",    bias = summary_df$lambda_bias),
+  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "epsilon",   bias = summary_df$epsilon_bias)
 )
 
-p_bias <- ggplot(bias_df, aes(x = factor(n), y = bias, color = scenario, group = scenario)) +
-  geom_line() + geom_point() +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
-  facet_wrap(~ parameter, scales = "free_y") +
-  labs(title = "Bias of recovered parameters by sample size", x = "n", y = "Bias", color = "Scenario") +
-  theme_minimal()
-ggsave("plots/bias_by_parameter.png", p_bias, width = 9, height = 6, dpi = 150)
+scenario_levels <- unique(bias_df$scenario)
+linetypes_4 <- c("solid", "dashed", "dotted", "dotdash")
+shapes_4    <- c(16, 17, 15, 21)
+names(linetypes_4) <- scenario_levels
+names(shapes_4)    <- scenario_levels
 
-# ---- 3. MSE by parameter (log scale -- MSE shrinks by orders of magnitude) ----
+p_bias <- ggplot(bias_df, aes(x = factor(n), y = bias,
+                              linetype = scenario, shape = scenario, group = scenario)) +
+  geom_line(color = "black") + geom_point(color = "black", fill = "white", size = 2) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "grey50", linewidth = 0.3) +
+  scale_linetype_manual(values = linetypes_4) +
+  scale_shape_manual(values = shapes_4) +
+  facet_wrap(~ parameter, scales = "free_y") +
+  labs( x = "n", y = "Bias",
+       linetype = "Scenario", shape = "Scenario") +
+  bw_theme
+ggsave("plots/bias_by_parameter.png", p_bias, width = 9, height = 6, dpi = 150, bg = "white")
+
+# ---- 3. MSE by parameter (log scale, black & white) ----
 mse_df <- rbind(
-  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "m",       mse = summary_df$m_mse),
-  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "sigma",   mse = summary_df$sigma_mse),
-  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "lambda",  mse = summary_df$lambda_mse),
-  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "epsilon", mse = summary_df$epsilon_mse)
+  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "m",        mse = summary_df$m_mse),
+  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "sigma^2",  mse = summary_df$sigma_mse),
+  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "lambda",   mse = summary_df$lambda_mse),
+  data.frame(n = summary_df$n, scenario = scenario_label(summary_df), parameter = "epsilon",  mse = summary_df$epsilon_mse)
 )
 
-p_mse <- ggplot(mse_df, aes(x = factor(n), y = mse, color = scenario, group = scenario)) +
-  geom_line() + geom_point() +
+p_mse <- ggplot(mse_df, aes(x = factor(n), y = mse,
+                            linetype = scenario, shape = scenario, group = scenario)) +
+  geom_line(color = "black") + geom_point(color = "black", fill = "white", size = 2) +
   scale_y_log10() +
+  scale_linetype_manual(values = linetypes_4) +
+  scale_shape_manual(values = shapes_4) +
   facet_wrap(~ parameter, scales = "free_y") +
-  labs(title = "MSE of recovered parameters by sample size (log scale)", x = "n", y = "MSE (log10 scale)", color = "Scenario") +
-  theme_minimal()
-ggsave("plots/mse_by_parameter.png", p_mse, width = 9, height = 6, dpi = 150)
+  labs( x = "n", y = "MSE (log10 scale)",
+       linetype = "Scenario", shape = "Scenario") +
+  bw_theme
+ggsave("plots/mse_by_parameter.png", p_mse, width = 9, height = 6, dpi = 150, bg = "white")
 
-# ---- 4. AIC selection rate ----
+# ---- 4. AIC selection rate (stacked bar -> greyscale fill + black outline) ----
 aic_win_df <- rbind(
   data.frame(n = summary_df$n, lambda_true = summary_df$lambda_true, epsilon_true = summary_df$epsilon_true,
              model = "Single",         rate = summary_df$aic_win_single),
@@ -407,14 +491,14 @@ aic_win_df$lambda_f  <- lambda_f(aic_win_df)
 aic_win_df$epsilon_f <- epsilon_f(aic_win_df)
 
 p_aic <- ggplot(aic_win_df, aes(x = factor(n), y = rate, fill = model)) +
-  geom_col(position = "stack") +
+  geom_col(position = "stack", color = "black", linewidth = 0.3) +
+  scale_fill_grey(start = 1, end = 0.2) +   # white -> grey -> black
   facet_grid(lambda_f ~ epsilon_f) +
-  labs(title = "AIC model-selection rate across replicates",
-       x = "n", y = "Proportion of replicates selecting each model", fill = "Selected model") +
-  theme_minimal()
-ggsave("plots/aic_selection_rate.png", p_aic, width = 8, height = 6, dpi = 150)
+  labs(x = "n", y = "Proportion of replicates selecting each model", fill = "Selected model") +
+  bw_theme
+ggsave("plots/aic_selection_rate.png", p_aic, width = 8, height = 6, dpi = 150, bg = "white")
 
-# ---- 5. BIC selection rate ----
+# ---- 5. BIC selection rate (stacked bar -> greyscale fill + black outline) ----
 bic_win_df <- rbind(
   data.frame(n = summary_df$n, lambda_true = summary_df$lambda_true, epsilon_true = summary_df$epsilon_true,
              model = "Single",         rate = summary_df$bic_win_single),
@@ -428,14 +512,14 @@ bic_win_df$lambda_f  <- lambda_f(bic_win_df)
 bic_win_df$epsilon_f <- epsilon_f(bic_win_df)
 
 p_bic <- ggplot(bic_win_df, aes(x = factor(n), y = rate, fill = model)) +
-  geom_col(position = "stack") +
+  geom_col(position = "stack", color = "black", linewidth = 0.3) +
+  scale_fill_grey(start = 1, end = 0.2) +
   facet_grid(lambda_f ~ epsilon_f) +
-  labs(title = "BIC model-selection rate across replicates",
-       x = "n", y = "Proportion of replicates selecting each model", fill = "Selected model") +
-  theme_minimal()
-ggsave("plots/bic_selection_rate.png", p_bic, width = 8, height = 6, dpi = 150)
+  labs(x = "n", y = "Proportion of replicates selecting each model", fill = "Selected model") +
+  bw_theme
+ggsave("plots/bic_selection_rate.png", p_bic, width = 8, height = 6, dpi = 150, bg = "white")
 
-cat("\nPlots saved to the 'plots/' directory:\n",
+cat("\nBlack-and-white plots (white background) saved to the 'plots/' directory:\n",
     " - convergence_rate.png\n",
     " - bias_by_parameter.png\n",
     " - mse_by_parameter.png\n",
