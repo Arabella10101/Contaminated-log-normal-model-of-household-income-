@@ -79,15 +79,15 @@ get_start <- function(x, jitter_sd = 0.5){
 # Check that a converged solution is a genuine local maximum, not a saddle
 # point or flat region optim stopped at prematurely.
 #
-# optim() is called with fnscale = -1, so internally it MINIMIZES -dlnL2(par).
-# The Hessian it returns is therefore the Hessian of -loglik at the solution.
-# At a true maximum of the log-likelihood, -loglik is locally convex there,
-# so that Hessian should be positive definite (all eigenvalues > 0).
+# Empirically (and per how optim's numerical Hessian is computed), the
+# Hessian returned here is of the log-likelihood itself (dlnL2), not of its
+# negation. At a true maximum, the log-likelihood is locally concave, so
+# this Hessian should be NEGATIVE definite (all eigenvalues < 0).
 # ---------------------------------------------------------------------------
 is_valid_maximum <- function(hess, tol = 1e-8){
   if (is.null(hess) || any(!is.finite(hess))) return(FALSE)
   eig <- eigen(hess, symmetric = TRUE, only.values = TRUE)$values
-  all(is.finite(eig)) && all(eig > tol)
+  all(is.finite(eig)) && all(eig < -tol)
 }
 
 # ---------------------------------------------------------------------------
@@ -178,6 +178,21 @@ results <- do.call(rbind, results_list)
 # ---------------------------------------------------------------------------
 summarize_scenario <- function(df){
   ok <- df[df$convergence == 0, ]
+  
+  if (nrow(ok) == 0){
+    return(data.frame(
+      n_converged = 0L,
+      n_total     = nrow(df),
+      
+      m_best = NA_real_, sigma_best = NA_real_, lambda_best = NA_real_,
+      epsilon_best = NA_real_, loglik_best = NA_real_,
+      
+      m_mean = NA_real_, m_bias = NA_real_, m_sd = NA_real_, m_mse = NA_real_,
+      sigma_mean = NA_real_, sigma_bias = NA_real_, sigma_sd = NA_real_, sigma_mse = NA_real_,
+      lambda_mean = NA_real_, lambda_bias = NA_real_, lambda_sd = NA_real_, lambda_mse = NA_real_,
+      epsilon_mean = NA_real_, epsilon_bias = NA_real_, epsilon_sd = NA_real_, epsilon_mse = NA_real_
+    ))
+  }
   
   best_row <- ok[which.max(ok$loglik), ]   # the single replicate with the highest log-likelihood
   
