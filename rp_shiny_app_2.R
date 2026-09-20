@@ -96,56 +96,6 @@ dlnL_cmLN <- function(par, x) {
   sum(log(epsilon * f1 + (1 - epsilon) * f2))
 }
 
-# Runs the multi-start search and reports progress via incProgress() as it
-# goes -- must be called from inside a withProgress() block so that reports
-# a live loading screen instead of the app appearing to hang.
-fit_cmLN_mode <- function(x, n_steps = 15,
-                          base_lambda = 1, base_eps = 0.99,
-                          lambda_step = 0.5, eps_step = -0.032) {
-  start_m     <- density_mode(x)
-  start_sigma <- sd(log(x[x < median(x)]))
-
-  results          <- vector("list", n_steps)
-  converged_flags  <- logical(n_steps)
-  logliks          <- rep(NA_real_, n_steps)
-
-  for (i in seq_len(n_steps)) {
-    incProgress(1 / n_steps, detail = sprintf("Multi-start %d of %d…", i, n_steps))
-
-    curr_L <- max(1.001, min(cmLN_lam_hi - 0.001, base_lambda + i * lambda_step))
-    curr_E <- max(cmLN_eps_lo + 0.001, min(0.99, base_eps + i * eps_step))
-    init_pars <- c(log(start_m), log(start_sigma),
-                   cmLN_inv_lam(curr_L), cmLN_inv_eps(curr_E))
-
-    est <- try(optim(par = init_pars, fn = dlnL_cmLN, x = x,
-                     control = list(fnscale = -1, maxit = 2000)),
-               silent = TRUE)
-
-    if (inherits(est, "try-error") || !is.finite(est$value) || est$convergence != 0) next
-    converged_flags[i] <- TRUE
-    logliks[i]         <- est$value
-    results[[i]]        <- est
-  }
-
-  n_converged <- sum(converged_flags)
-  if (n_converged == 0) {
-    return(list(m = NA, sigma = NA, lambda = NA, epsilon = NA,
-               logLik = NA, n_converged = 0, n_tries = n_steps))
-  }
-
-  best_est <- results[[which.max(logliks)]]
-  par <- best_est$par
-  list(
-    m           = exp(par[1]),
-    sigma       = exp(par[2]),
-    lambda      = 1 + (cmLN_lam_hi - 1) / (1 + exp(-par[3])),
-    epsilon     = cmLN_eps_lo + (1 - cmLN_eps_lo) / (1 + exp(-par[4])),
-    logLik      = best_est$value,
-    n_converged = n_converged,
-    n_tries     = n_steps
-  )
-}
-
 ## Gini coefficient for the contaminated mode-parametrized log-normal.
 ## Identical method to rp_gini_coeff_Balidis.R / RP_HI_Fit_and_Gini.R.
 cmLN_H <- function(x, m, s2) {
@@ -157,24 +107,231 @@ cmLN_F_contam <- function(x, eps, m, s2, lam) {
 cmLN_EX_contam <- function(eps, m, s2, lam) {
   m * (eps * exp(1.5 * s2) + (1 - eps) * exp(1.5 * lam * s2))
 }
-gini_coeff <- function(eps, m, s2, lam, tol = 1e-12) {
+
+# Currency formatter, shared by the server and the animated-log helpers below.
+fmt_r   <- function(x) paste0("R ", format(round(x), big.mark = ","))
+fmt_num <- function(x, digits = 4) format(round(x, digits), big.mark = ",", nsmall = digits)
+
+# ── Interactive calculation log (equations + values for the "loading screen") ──
+# LaTeX source, transcribed from RP_Balidis_u21495361.pdf (Section 2 & Appendix).
+# NOTE: the lambda/epsilon transforms below are the app's own BOUNDED logistic
+# forms (lambda in (1,50), epsilon in (0.5,1)) rather than the simpler
+# unbounded forms shown in the written report -- this matches what the code
+# actually optimizes over (see the "Bounded so lambda/epsilon can't run off..."
+# comment elsewhere in this codebase), so the popup stays faithful to what's
+# really being computed rather than the report's original toy transform.
+eq_fmLN    <- r"(f_{mLN}(x;m,\sigma^2)=\dfrac{1}{x\sigma\sqrt{2\pi}}\exp\!\left[-\dfrac{(\ln(x/m)-\sigma^2)^2}{2\sigma^2}\right])"
+eq_fcmLN   <- r"(f_{cmLN}(x;\varepsilon,m,\sigma^2,\lambda)=\varepsilon\,f_{mLN}(x;m,\sigma^2)+(1-\varepsilon)\,f_{mLN}(x;m,\lambda\sigma^2))"
+eq_loglik  <- r"(\ln L(\varepsilon,m,\sigma^2,\lambda)=\sum_{i=1}^{n}\ln\Big[\varepsilon\,f_{mLN}(x_i;m,\sigma^2)+(1-\varepsilon)\,f_{mLN}(x_i;m,\lambda\sigma^2)\Big])"
+eq_transf  <- r"(\tilde m=\ln m,\quad\tilde\sigma=\ln\sigma,\quad\tilde\lambda=\ln\!\left(\dfrac{\lambda-1}{\lambda_{hi}-\lambda}\right),\quad\tilde\varepsilon=\ln\!\left(\dfrac{\varepsilon-\varepsilon_{lo}}{1-\varepsilon}\right))"
+
+# One "step card" of the calculation log: a title, a (Display-mode) LaTeX
+# equation typeset by MathJax, and optional HTML detail lines underneath.
+calc_step_card <- function(step_no, title, eq_latex, detail_html = "", status = "info", size = "normal") {
+  cls <- switch(status,
+    best = "calc-step calc-step-best",
+    fail = "calc-step calc-step-fail",
+    done = "calc-step calc-step-done",
+    "calc-step calc-step-info"
+  )
+  if (size == "live") cls <- paste(cls, "calc-step-live")
+  sprintf(
+    r"(<div class="%s"><div class="calc-step-head"><span class="calc-step-num">Step %d</span><span class="calc-step-title">%s</span></div><div class="calc-step-eq">\[%s\]</div>%s</div>)",
+    cls, step_no, title, eq_latex,
+    if (nzchar(detail_html)) sprintf(r"(<div class="calc-step-detail">%s</div>)", detail_html) else ""
+  )
+}
+
+# Runs the multi-start search exactly as fit_cmLN_mode() used to, but instead
+# of a plain progress bar it calls on_step(title, eq_latex, detail_html,
+# status) once per optim() attempt (converged or not) so the caller can
+# render a live, worked-math log of every step -- including which attempt is
+# the current running-maximum log-likelihood.
+fit_cmLN_mode_animated <- function(x, on_step, n_steps = 15,
+                                   base_lambda = 1, base_eps = 0.99,
+                                   lambda_step = 0.5, eps_step = -0.032) {
+  start_m     <- density_mode(x)
+  start_sigma <- sd(log(x[x < median(x)]))
+
+  on_step(
+    title = "Model and objective function",
+    eq_latex = paste(eq_fmLN, eq_fcmLN, eq_loglik, eq_transf, sep = r"(\\[8pt])"),
+    detail_html = sprintf(
+      r"(<div class="calc-line">Fitting to <b>n = %s</b> filtered households.</div><div class="calc-line">Starting values (held fixed across all %d multi-starts): \(\tilde m_0=\ln(%s)=%s\), \(\tilde\sigma_0=\ln(%s)=%s\)</div>)",
+      format(length(x), big.mark = ","), n_steps,
+      fmt_num(start_m, 2), fmt_num(log(start_m)), fmt_num(start_sigma, 4), fmt_num(log(start_sigma))
+    ),
+    status = "info"
+  )
+
+  results         <- vector("list", n_steps)
+  converged_flags <- logical(n_steps)
+  logliks         <- rep(NA_real_, n_steps)
+  best_so_far     <- -Inf
+
+  for (i in seq_len(n_steps)) {
+    curr_L <- max(1.001, min(cmLN_lam_hi - 0.001, base_lambda + i * lambda_step))
+    curr_E <- max(cmLN_eps_lo + 0.001, min(0.99, base_eps + i * eps_step))
+    init_pars <- c(log(start_m), log(start_sigma),
+                   cmLN_inv_lam(curr_L), cmLN_inv_eps(curr_E))
+
+    est <- try(optim(par = init_pars, fn = dlnL_cmLN, x = x,
+                     control = list(fnscale = -1, maxit = 2000)),
+               silent = TRUE)
+
+    ok <- !(inherits(est, "try-error") || !is.finite(est$value) || est$convergence != 0)
+
+    init_detail <- sprintf(
+      r"(<div class="calc-line">Initial guess: \(\lambda_0=%s,\ \varepsilon_0=%s\ \Rightarrow\ \tilde\lambda_0=%s,\ \tilde\varepsilon_0=%s\)</div>)",
+      fmt_num(curr_L, 3), fmt_num(curr_E, 3), fmt_num(cmLN_inv_lam(curr_L)), fmt_num(cmLN_inv_eps(curr_E))
+    )
+
+    if (!ok) {
+      on_step(
+        title = sprintf("Optim call %d of %d — did not converge", i, n_steps),
+        eq_latex = eq_loglik,
+        detail_html = paste0(init_detail, r"(<div class="calc-line calc-fail">✗ Optimizer failed to converge — skipped.</div>)"),
+        status = "fail"
+      )
+      next
+    }
+
+    converged_flags[i] <- TRUE
+    logliks[i]          <- est$value
+    results[[i]]         <- est
+
+    par       <- est$par
+    m_i       <- exp(par[1]); sigma_i <- exp(par[2])
+    lambda_i  <- 1 + (cmLN_lam_hi - 1) / (1 + exp(-par[3]))
+    epsilon_i <- cmLN_eps_lo + (1 - cmLN_eps_lo) / (1 + exp(-par[4]))
+
+    is_new_best <- est$value > best_so_far
+    prev_best_txt <- if (i == 1 || all(!converged_flags[seq_len(i - 1)])) "none yet" else fmt_num(max(logliks[seq_len(i - 1)], na.rm = TRUE), 2)
+    if (is_new_best) best_so_far <- est$value
+
+    result_detail <- sprintf(
+      r"(<div class="calc-line">Output: \(\hat m=%s,\ \hat\sigma^2=%s,\ \hat\lambda=%s,\ \hat\varepsilon=%s\)</div><div class="calc-line">\(\ln\hat L=%s\)</div><div class="calc-line %s">%s</div>)",
+      fmt_r(m_i), fmt_num(sigma_i^2), fmt_num(lambda_i), fmt_num(epsilon_i), fmt_num(est$value, 2),
+      if (is_new_best) "calc-best" else "calc-notbest",
+      if (is_new_best) sprintf("\U0001F3C6 New maximum log-likelihood (previous best: %s)", prev_best_txt)
+      else sprintf("Below current maximum of %s", fmt_num(best_so_far, 2))
+    )
+
+    on_step(
+      title = sprintf("Optim call %d of %d%s", i, n_steps, if (is_new_best) " — new best" else ""),
+      eq_latex = eq_loglik,
+      detail_html = paste0(init_detail, result_detail),
+      status = if (is_new_best) "best" else "info"
+    )
+  }
+
+  n_converged <- sum(converged_flags)
+  if (n_converged == 0) {
+    on_step(
+      title = "No converged fit",
+      eq_latex = eq_loglik,
+      detail_html = r"(<div class="calc-line calc-fail">✗ None of the multi-starts converged.</div>)",
+      status = "fail"
+    )
+    return(list(m = NA, sigma = NA, lambda = NA, epsilon = NA,
+               logLik = NA, n_converged = 0, n_tries = n_steps))
+  }
+
+  best_idx <- which.max(logliks)
+  best_est <- results[[best_idx]]
+  par <- best_est$par
+  fit <- list(
+    m           = exp(par[1]),
+    sigma       = exp(par[2]),
+    lambda      = 1 + (cmLN_lam_hi - 1) / (1 + exp(-par[3])),
+    epsilon     = cmLN_eps_lo + (1 - cmLN_eps_lo) / (1 + exp(-par[4])),
+    logLik      = best_est$value,
+    n_converged = n_converged,
+    n_tries     = n_steps
+  )
+
+  on_step(
+    title = sprintf("Best fit selected (from %d/%d converged attempts)", n_converged, n_steps),
+    eq_latex = eq_loglik,
+    detail_html = sprintf(
+      r"(<div class="calc-line">\(\hat m=%s,\ \hat\sigma^2=%s,\ \hat\lambda=%s,\ \hat\varepsilon=%s,\ \ln\hat L=%s\)</div>)",
+      fmt_r(fit$m), fmt_num(fit$sigma^2), fmt_num(fit$lambda), fmt_num(fit$epsilon), fmt_num(fit$logLik, 2)
+    ),
+    status = "done"
+  )
+
+  fit
+}
+
+# Computes the Gini coefficient exactly as gini_coeff() used to, but calls
+# on_step() once per equation (2)-(4) from the report's appendix, so the
+# derivation from the fitted parameters to the final G is shown worked out.
+gini_coeff_animated <- function(eps, m, s2, lam, on_step, tol = 1e-12) {
+  EX_ref <- m * exp(1.5 * s2)
+  on_step(
+    title = "Expected value of the reference component",
+    eq_latex = r"(E(X;m,\sigma^2)=m\,e^{1.5\sigma^2})",
+    detail_html = sprintf(
+      r"(<div class="calc-line">\(E(X;m,\sigma^2)=%s\times e^{1.5\times\,%s}=%s\)</div>)",
+      fmt_r(m), fmt_num(s2), fmt_r(EX_ref)
+    ),
+    status = "info"
+  )
+
+  EX_out <- m * exp(1.5 * lam * s2)
   mu <- cmLN_EX_contam(eps, m, s2, lam)
-  survival_sq <- function(x) (1 - cmLN_F_contam(x, eps, m, s2, lam))^2
+  on_step(
+    title = "Expected value of the contaminated model",
+    eq_latex = r"(E(X;\varepsilon,m,\sigma^2,\lambda)=\varepsilon\,E(X;m,\sigma^2)+(1-\varepsilon)\,E(X;m,\lambda\sigma^2))",
+    detail_html = sprintf(
+      r"(<div class="calc-line">\(E(X)=%s\times\,%s+%s\times\,%s=%s\)</div>)",
+      fmt_num(eps, 4), fmt_r(EX_ref), fmt_num(1 - eps, 4), fmt_r(EX_out), fmt_r(mu)
+    ),
+    status = "info"
+  )
 
   target <- function(x) (1 - cmLN_F_contam(x, eps, m, s2, lam)) - tol
   X_hi <- uniroot(target, lower = m, upper = m * 1e8)$root
+  on_step(
+    title = "Contaminated CDF and integration cutoff",
+    eq_latex = paste(
+      r"(H(x;m,\sigma^2)=0.5+0.5\,\mathrm{erf}\!\left(\dfrac{\ln x-\ln m-\sigma^2}{\sqrt{2\sigma^2}}\right))",
+      r"(F(x;\varepsilon,m,\sigma^2,\lambda)=\varepsilon\,H(x;m,\sigma^2)+(1-\varepsilon)\,H(x;m,\lambda\sigma^2))",
+      sep = r"(\\[8pt])"
+    ),
+    detail_html = sprintf(
+      r"(<div class="calc-line">Solved numerically for \(X_{hi}\) where \(1-F(X_{hi})=10^{-12}\): \(X_{hi}=%s\)</div>)",
+      fmt_r(X_hi)
+    ),
+    status = "info"
+  )
 
-  integrand_t <- function(t) {
-    x <- exp(t)
-    survival_sq(x) * x
-  }
-  t_lo <- log(1e-6)
-  t_hi <- log(X_hi)
-
-  res <- integrate(integrand_t, lower = t_lo, upper = t_hi,
+  survival_sq <- function(x) (1 - cmLN_F_contam(x, eps, m, s2, lam))^2
+  integrand_t <- function(t) { xx <- exp(t); survival_sq(xx) * xx }
+  res <- integrate(integrand_t, lower = log(1e-6), upper = log(X_hi),
                    rel.tol = 1e-10, subdivisions = 1000)
+  on_step(
+    title = "Numerical integral",
+    eq_latex = r"(\int_0^{\infty}\left[1-F(x;\varepsilon,m,\sigma^2,\lambda)\right]^2\,dx)",
+    detail_html = sprintf(
+      r"(<div class="calc-line">Evaluated via R's <code>integrate()</code> on a log-scale substitution \(x=e^t\) for numerical stability.</div><div class="calc-line">Result \(=%s\) (estimated error \(%s\))</div>)",
+      format(res$value, scientific = TRUE, digits = 6), format(res$abs.error, scientific = TRUE, digits = 3)
+    ),
+    status = "info"
+  )
 
-  list(G = 1 - res$value / mu, abs.error = res$abs.error, X_hi = X_hi, mean = mu)
+  G <- 1 - res$value / mu
+  on_step(
+    title = "Gini coefficient",
+    eq_latex = r"(G(\varepsilon,m,\sigma^2,\lambda)=1-\dfrac{1}{E(X;\varepsilon,m,\sigma^2,\lambda)}\int_0^{\infty}\left[1-F(x;\varepsilon,m,\sigma^2,\lambda)\right]^2dx)",
+    detail_html = sprintf(
+      r"(<div class="calc-line">\(G=1-\dfrac{%s}{%s}=%s\)</div>)",
+      format(res$value, scientific = TRUE, digits = 6), fmt_r(mu), fmt_num(G, 4)
+    ),
+    status = "done"
+  )
+
+  list(G = G, abs.error = res$abs.error, X_hi = X_hi, mean = mu)
 }
 
 # ── ggplot theme ───────────────────────────────────────────────────────────────
@@ -486,12 +643,102 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
   border: 2px solid #2E5A3E;
 }
 .splash-start-btn:hover { background-color: #2E5A3E; border-color: #2E5A3E; }
+
+/* ── Interactive calculation log (Model Fit & Gini modal) ── */
+#calc-log-container {
+  background-color: #FAF3EA;
+  border: 1px solid #C4956A;
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+.calc-step {
+  border-left: 4px solid #8B7D6B;
+  background-color: #F5E6D3;
+  border-radius: 4px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.calc-step-best { border-left-color: #2E5A3E; background-color: #E7F0E9; }
+.calc-step-fail { border-left-color: #A0522D; background-color: #F7E9E2; opacity: 0.88; }
+.calc-step-done { border-left-color: #3D2B1F; background-color: #EDD9C0; }
+.calc-step-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.calc-step-num {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #8B7D6B;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.calc-step-title {
+  font-family: 'Playfair Display', serif;
+  font-size: 14px;
+  color: #3D2B1F;
+  font-weight: 700;
+}
+.calc-step-eq {
+  font-size: 13px;
+  color: #3D2B1F;
+  margin: 6px 0;
+  overflow-x: auto;
+}
+.calc-step-detail { font-size: 12px; color: #6B4226; line-height: 1.5; }
+.calc-line { margin: 2px 0; }
+.calc-line.calc-best    { color: #2E5A3E; font-weight: 700; }
+.calc-line.calc-notbest { color: #8B7D6B; }
+.calc-line.calc-fail    { color: #A0522D; font-weight: 700; }
+.calc-ready-banner {
+  background-color: #2E5A3E;
+  color: #FAF3EA;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-family: 'Playfair Display', serif;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+/* ── Computing placeholder shown while the real math runs (no artificial delay) ── */
+.calc-computing {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 45vh;
+  gap: 16px;
+  font-family: 'Playfair Display', serif;
+  font-size: 17px;
+  color: #3D2B1F;
+  text-align: center;
+}
+.calc-spinner { font-size: 36px; animation: calc-spin 1.4s linear infinite; }
+@keyframes calc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* ── Live one-step-at-a-time slideshow (replayed at a strict, uniform pace,
+   decoupled from how long the underlying computation actually took) ── */
+#calc-log-live { min-height: 52vh; display: flex; align-items: center; }
+.calc-step-live {
+  width: 100%;
+  padding: 28px 34px;
+  margin-bottom: 0;
+}
+.calc-step-live .calc-step-num   { font-size: 13px; }
+.calc-step-live .calc-step-title { font-size: 21px; }
+.calc-step-live .calc-step-eq    { font-size: 19px; margin: 18px 0; }
+.calc-step-live .calc-step-detail { font-size: 15px; line-height: 1.8; }
 "
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 ui <- fluidPage(
   title = "IES 2022/23 Household Income Explorer",
   tags$head(tags$style(HTML(mcm_css))),
+  withMathJax(),
 
   # ── Splash / start screen ──
   div(id = "splash-overlay", class = "splash-overlay",
@@ -507,6 +754,24 @@ ui <- fluidPage(
         setTimeout(function(){ overlay.style.display = 'none'; }, 650);
       });
     })();
+  ")),
+
+  # ── Live calculation log (Model Fit & Gini modal) ──────────────────────────
+  # Each step is its own showModal() re-render. Scoped to a single element
+  # id (defaulting to the whole body only when no id is given) -- retypesetting
+  # the ENTIRE page on every one of ~20 rapid-fire steps is expensive and can
+  # race against showModal() tearing down the previous step's DOM nodes
+  # (MathJax trying to typeset an element that's already been removed).
+  tags$script(HTML("
+    Shiny.addCustomMessageHandler('mathjax_retypeset', function(msg) {
+      if (!(window.MathJax && window.MathJax.Hub)) return;
+      var target = (msg && msg.id) ? document.getElementById(msg.id) : null;
+      if (target) {
+        MathJax.Hub.Queue(['Typeset', MathJax.Hub, target]);
+      } else {
+        MathJax.Hub.Queue(['Typeset', MathJax.Hub]);
+      }
+    });
   ")),
 
   # ── App header ──
@@ -982,7 +1247,7 @@ server <- function(input, output, session) {
   })
 
   # ── Helpers ─────────────────────────────────────────────────────────────────
-  fmt_r <- function(x) paste0("R\u00A0", format(round(x), big.mark=","))
+  # fmt_r() now lives at top-level (shared with the animated calc-log helpers).
 
   stat_card <- function(label, value, style="default") {
     cls <- switch(style,
@@ -1009,17 +1274,64 @@ server <- function(input, output, session) {
     validate(need(length(x) >= 30,
                   "Not enough filtered households (need at least 30) to fit a model. Widen your filters and try again."))
 
-    withProgress(message = "Fitting mode-parameterized contaminated log-normal model…", value = 0, {
-      fit <- fit_cmLN_mode(x, n_steps = 15)
+    step_delay <- 3   # seconds EVERY step is shown for, uniformly (see below)
+    modal_title <- "Fitting the Mode-Parameterized Contaminated Log-Normal Model"
 
-      g <- if (is.na(fit$logLik)) {
-        NULL
-      } else {
-        incProgress(0, detail = "Computing Gini coefficient…")
-        tryCatch(gini_coeff(fit$epsilon, fit$m, fit$sigma^2, fit$lambda),
-                 error = function(e) NULL)
-      }
-    })
+    # ── Phase 1: run the real computation at full speed, no artificial delay.
+    # on_step() here only RECORDS each step (title/equation/detail/status) --
+    # it does not touch the UI -- so the 15 optim() multi-starts and the Gini
+    # derivation run exactly as fast as R can do them.
+    showModal(modalDialog(
+      title = modal_title, size = "l", easyClose = FALSE, footer = NULL,
+      div(class = "calc-computing",
+          div(class = "calc-spinner", "⚙"),
+          div("Running the optimization…"))
+    ))
+
+    steps <- list()
+    record <- function(title, eq_latex, detail_html = "", status = "info") {
+      steps[[length(steps) + 1]] <<- list(title = title, eq_latex = eq_latex,
+                                          detail_html = detail_html, status = status)
+    }
+
+    fit <- fit_cmLN_mode_animated(x, on_step = record, n_steps = 15)
+
+    g <- if (is.na(fit$logLik)) {
+      NULL
+    } else {
+      tryCatch(gini_coeff_animated(fit$epsilon, fit$m, fit$sigma^2, fit$lambda, on_step = record),
+               error = function(e) NULL)
+    }
+
+    # ── Phase 2: replay the recorded steps one at a time, each filling the
+    # whole modal pane, for EXACTLY step_delay seconds -- fully decoupled
+    # from how long the real computation above took, so every step (a fast
+    # Gini line or a slow optim() call alike) gets the same time on screen.
+    log_acc <- character(0)
+    for (i in seq_along(steps)) {
+      s <- steps[[i]]
+      log_acc[[length(log_acc) + 1]] <- calc_step_card(i, s$title, s$eq_latex, s$detail_html, s$status, size = "normal")
+      showModal(modalDialog(
+        title = modal_title, size = "l", easyClose = FALSE, footer = NULL,
+        div(id = "calc-log-live",
+            HTML(calc_step_card(i, s$title, s$eq_latex, s$detail_html, s$status, size = "live")))
+      ))
+      # showModal()'s dynamic content isn't auto-typeset by MathJax on a
+      # repeated call within the same session, so trigger it explicitly --
+      # scoped to just this node (not the whole page) to keep each retypeset
+      # cheap and avoid racing with the next showModal() tearing this node down.
+      session$sendCustomMessage("mathjax_retypeset", list(id = "calc-log-live"))
+      Sys.sleep(step_delay)
+    }
+
+    showModal(modalDialog(
+      title = modal_title, size = "l", easyClose = TRUE, footer = modalButton("Close"),
+      div(class = "calc-ready-banner",
+          "✓ Results ready — scroll through the log below, or close this window to view the summary."),
+      div(id = "calc-log-container", style = "max-height:65vh; overflow-y:auto; padding-right:8px;",
+          HTML(paste(log_acc, collapse = "")))
+    ))
+    session$sendCustomMessage("mathjax_retypeset", list())
 
     list(fit = fit, gini = g, n = length(x), x = x)
   })
@@ -1053,7 +1365,7 @@ server <- function(input, output, session) {
     tagList(
       fluidRow(
         column(6, stat_card("Mode (m)", fmt_r(fit$m))),
-        column(6, stat_card("Sigma", round(fit$sigma, 4), "dark"))
+        column(6, stat_card("Sigma²", round(fit$sigma^2, 4), "dark"))
       ),
       fluidRow(
         column(6, stat_card("Lambda", round(fit$lambda, 4), "tan")),
