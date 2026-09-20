@@ -15,9 +15,9 @@ inv_eps <- function(e) log((e - eps_lo) / (1 - e))
 # Model log-likelihood
 # =============================================================================
 
-# Contaminated (mixture) lognormal, MODE parameterization.
+# Contaminated mode parameterized lognormal,
 # par = c(log(m), log(sigma), logit(lambda), logit(epsilon)). mu is recovered
-# via mu = log(m) + sigma^2 before being plugged into the two-component mixture.
+# via mu = log(m) + sigma^2 before being plugged in.
 dlnL_mix_mode <- function(par, x) {
   m       <- exp(par[1])
   sigma   <- exp(par[2])

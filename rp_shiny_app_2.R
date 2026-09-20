@@ -9,6 +9,11 @@ library(dplyr)
 library(ggplot2)
 library(DT)
 library(scales)
+library(pracma)   # provides erf(), used in the Gini coefficient calculation
+
+# Data file locations change to correct location
+HOUSEHOLDS_CSV <- "C:/Users/arabe/Documents/Research_Project/Fact_IES2023_Households.csv"
+GEOGRAPHY_CSV  <- "C:/Users/arabe/Documents/Research_Project/Fact_IES2023_Geography.csv"
 
 # ── Label look-ups ─────────────────────────────────────────────────────────────
 sex_lbl     <- c("1"="Male",          "2"="Female")
@@ -57,10 +62,6 @@ PAL <- c("#A0522D","#D4783E","#C4956A","#8B7D6B",
          "#6B4226","#3D2B1F","#EDD9C0","#D4A76A","#B8865C","#7A5C3E")
 SETTLE_PAL <- c("Urban"="#A0522D","Traditional"="#D4783E","Farms"="#8B7D6B")
 
-# Data file locations
-HOUSEHOLDS_CSV <- "C:/Users/arabe/Documents/Research_Project/Fact_IES2023_Households.csv"
-GEOGRAPHY_CSV  <- "C:/Users/arabe/Documents/Research_Project/Fact_IES2023_Geography.csv"
-
 #estimates the most common income level for a population group by smoothing the data into a 
 #continuous curve and identifying the point where that curve reaches its highest peak.
 density_mode <- function(x, na.rm = TRUE) {
@@ -68,6 +69,112 @@ density_mode <- function(x, na.rm = TRUE) {
   if (length(x) < 2) return(NA_real_)
   d <- density(x)
   d$x[which.max(d$y)]
+}
+
+# ── Contaminated lognormal (mode-parameterized) fit + Gini coefficient ─────────
+# Same model/method as RP_HI_Fit_and_Gini.R, condensed to a single fit used
+# on-demand for whatever subset of households the current filters select.
+
+# n_steps kept lower here (15 vs. the 50 used in the offline RP_HI_Fit_and_Gini.R
+# script) so a click of "Calculate" stays responsive; the step sizes below match
+# the 15-step multi-start "nudge path" already validated for cmLN fits in
+# RP_Final_Simulation.R, so 15 steps still covers a comparable lambda/epsilon
+# range as the offline script's 50 finer steps.
+cmLN_eps_lo <- 0.5
+cmLN_lam_hi <- 50
+cmLN_inv_lam <- function(l) log((l - 1) / (cmLN_lam_hi - l))
+cmLN_inv_eps <- function(e) log((e - cmLN_eps_lo) / (1 - e))
+
+dlnL_cmLN <- function(par, x) {
+  m       <- exp(par[1])
+  sigma   <- exp(par[2])
+  mu      <- log(m) + sigma^2
+  lambda  <- 1 + (cmLN_lam_hi - 1) / (1 + exp(-par[3]))
+  epsilon <- cmLN_eps_lo + (1 - cmLN_eps_lo) / (1 + exp(-par[4]))
+  f1 <- dlnorm(x, meanlog = mu, sdlog = sigma)
+  f2 <- dlnorm(x, meanlog = mu + (lambda - 1) * sigma^2, sdlog = sqrt(lambda) * sigma)
+  sum(log(epsilon * f1 + (1 - epsilon) * f2))
+}
+
+# Runs the multi-start search and reports progress via incProgress() as it
+# goes -- must be called from inside a withProgress() block so that reports
+# a live loading screen instead of the app appearing to hang.
+fit_cmLN_mode <- function(x, n_steps = 15,
+                          base_lambda = 1, base_eps = 0.99,
+                          lambda_step = 0.5, eps_step = -0.032) {
+  start_m     <- density_mode(x)
+  start_sigma <- sd(log(x[x < median(x)]))
+
+  results          <- vector("list", n_steps)
+  converged_flags  <- logical(n_steps)
+  logliks          <- rep(NA_real_, n_steps)
+
+  for (i in seq_len(n_steps)) {
+    incProgress(1 / n_steps, detail = sprintf("Multi-start %d of %d…", i, n_steps))
+
+    curr_L <- max(1.001, min(cmLN_lam_hi - 0.001, base_lambda + i * lambda_step))
+    curr_E <- max(cmLN_eps_lo + 0.001, min(0.99, base_eps + i * eps_step))
+    init_pars <- c(log(start_m), log(start_sigma),
+                   cmLN_inv_lam(curr_L), cmLN_inv_eps(curr_E))
+
+    est <- try(optim(par = init_pars, fn = dlnL_cmLN, x = x,
+                     control = list(fnscale = -1, maxit = 2000)),
+               silent = TRUE)
+
+    if (inherits(est, "try-error") || !is.finite(est$value) || est$convergence != 0) next
+    converged_flags[i] <- TRUE
+    logliks[i]         <- est$value
+    results[[i]]        <- est
+  }
+
+  n_converged <- sum(converged_flags)
+  if (n_converged == 0) {
+    return(list(m = NA, sigma = NA, lambda = NA, epsilon = NA,
+               logLik = NA, n_converged = 0, n_tries = n_steps))
+  }
+
+  best_est <- results[[which.max(logliks)]]
+  par <- best_est$par
+  list(
+    m           = exp(par[1]),
+    sigma       = exp(par[2]),
+    lambda      = 1 + (cmLN_lam_hi - 1) / (1 + exp(-par[3])),
+    epsilon     = cmLN_eps_lo + (1 - cmLN_eps_lo) / (1 + exp(-par[4])),
+    logLik      = best_est$value,
+    n_converged = n_converged,
+    n_tries     = n_steps
+  )
+}
+
+## Gini coefficient for the contaminated mode-parametrized log-normal.
+## Identical method to rp_gini_coeff_Balidis.R / RP_HI_Fit_and_Gini.R.
+cmLN_H <- function(x, m, s2) {
+  0.5 + 0.5 * erf((log(x) - log(m) - s2) / sqrt(2 * s2))
+}
+cmLN_F_contam <- function(x, eps, m, s2, lam) {
+  eps * cmLN_H(x, m, s2) + (1 - eps) * cmLN_H(x, m, lam * s2)
+}
+cmLN_EX_contam <- function(eps, m, s2, lam) {
+  m * (eps * exp(1.5 * s2) + (1 - eps) * exp(1.5 * lam * s2))
+}
+gini_coeff <- function(eps, m, s2, lam, tol = 1e-12) {
+  mu <- cmLN_EX_contam(eps, m, s2, lam)
+  survival_sq <- function(x) (1 - cmLN_F_contam(x, eps, m, s2, lam))^2
+
+  target <- function(x) (1 - cmLN_F_contam(x, eps, m, s2, lam)) - tol
+  X_hi <- uniroot(target, lower = m, upper = m * 1e8)$root
+
+  integrand_t <- function(t) {
+    x <- exp(t)
+    survival_sq(x) * x
+  }
+  t_lo <- log(1e-6)
+  t_hi <- log(X_hi)
+
+  res <- integrate(integrand_t, lower = t_lo, upper = t_hi,
+                   rel.tol = 1e-10, subdivisions = 1000)
+
+  list(G = 1 - res$value / mu, abs.error = res$abs.error, X_hi = X_hi, mean = mu)
 }
 
 # ── ggplot theme ───────────────────────────────────────────────────────────────
@@ -383,7 +490,7 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
 
 # ── UI ────────────────────────────────────────────────────────────────────────
 ui <- fluidPage(
-  title = "IES 2022/23 Income Explorer",
+  title = "IES 2022/23 Household Income Explorer",
   tags$head(tags$style(HTML(mcm_css))),
 
   # ── Splash / start screen ──
@@ -428,7 +535,7 @@ ui <- fluidPage(
           # ── Tab 1: Summary stats ──
           tabPanel("📊  Summary Statistics",
             br(),
-            p(class = "section-head", "Key Income & Expenditure Metrics"),
+            p(class = "section-head", "Key Household Income & Expenditure Metrics"),
 
             fluidRow(
               column(4, uiOutput("card1")),
@@ -449,11 +556,11 @@ ui <- fluidPage(
 
             fluidRow(
               column(6,
-                p(class = "section-head", "Income by Decile"),
+                p(class = "section-head", "Household Income by Decile"),
                 tableOutput("tbl_decile")
               ),
               column(6,
-                p(class = "section-head", "Income by Population Group"),
+                p(class = "section-head", "Household Income by Population Group"),
                 tableOutput("tbl_pop")
               )
             )
@@ -470,29 +577,29 @@ ui <- fluidPage(
             br(),
             fluidRow(
               column(6,
-                p(class = "section-head", "Income Distribution"),
+                p(class = "section-head", "Household Income Distribution"),
                 plotOutput("plt_hist", height = "270px")
               ),
               column(6,
-                p(class = "section-head", "Mode Income by Decile"),
+                p(class = "section-head", "Mode Household Income by Decile"),
                 plotOutput("plt_decile", height = "270px")
               )
             ),
             br(),
             fluidRow(
               column(6,
-                p(class = "section-head", "Income by Population Group"),
+                p(class = "section-head", "Household Income by Population Group"),
                 plotOutput("plt_pop_box", height = "290px")
               ),
               column(6,
-                p(class = "section-head", "Income per Capita by Household Size"),
+                p(class = "section-head", "Household Income per Capita by Household Size"),
                 plotOutput("plt_hsize", height = "290px")
               )
             ),
             br(),
             fluidRow(
               column(12,
-                p(class = "section-head", "Mode Income by Self-Reported Status"),
+                p(class = "section-head", "Mode Household Income by Self-Reported Status"),
                 plotOutput("plt_status", height = "250px")
               )
             )
@@ -503,11 +610,11 @@ ui <- fluidPage(
             br(),
             fluidRow(
               column(6,
-                p(class = "section-head", "Income by Province"),
+                p(class = "section-head", "Household Income by Province"),
                 plotOutput("plt_province_box", height = "290px")
               ),
               column(6,
-                p(class = "section-head", "Mode Income by Settlement Type"),
+                p(class = "section-head", "Mode Household Income by Settlement Type"),
                 plotOutput("plt_settlement_bar", height = "290px")
               )
             ),
@@ -538,6 +645,44 @@ ui <- fluidPage(
 
             p(class = "section-head", "At a Glance"),
             uiOutput("ind_cards")
+          ),
+
+          # ── Tab 6: Model Fit & Gini ──
+          tabPanel("\U0001F9EE  Model Fit & Gini",
+            br(),
+            p(class = "section-head", "Mode-Parameterized Contaminated Log-Normal Fit"),
+            p(style = "color:#6B4226;",
+              "Fits a two-component mode-parameterized contaminated log-normal model to the currently filtered household income data using a multi-start log-likelihood search, then computes the Gini coefficient from the fitted parameters."),
+            actionButton("fit_btn", "▶ Calculate Fit & Gini", class = "btn-mcm",
+                        style = "width:260px;"),
+            br(), br(),
+
+            conditionalPanel(
+              condition = "!input.fit_btn || input.fit_btn == 0",
+              p(style = "color:#6B4226; font-style:italic;",
+                "Set your filters in the sidebar, then click Calculate to run the model fit on the current selection.")
+            ),
+
+            conditionalPanel(
+              condition = "input.fit_btn > 0",
+              fluidRow(
+                column(6,
+                  p(class = "section-head", "Household Income Distribution (Filtered Sample)"),
+                  plotOutput("plt_fit_hist", height = "280px")
+                ),
+                column(6,
+                  p(class = "section-head", "Fitted Mode-Parameterized Contaminated Log-Normal Parameters"),
+                  uiOutput("fit_params_ui")
+                )
+              ),
+              br(),
+              fluidRow(
+                column(12,
+                  p(class = "section-head", "Gini Coefficient"),
+                  uiOutput("gini_ui")
+                )
+              )
+            )
           )
         )
       )
@@ -616,9 +761,9 @@ server <- function(input, output, session) {
     size_max <- if ("HSIZE"     %in% names(df)) min(max(df$HSIZE, na.rm=TRUE), 20) else 20
 
     tagList(
-      tags$h4("Income"),
-      sliderInput("f_decile",   "Income Decile",   1, 10,       c(1,10),       step=1, ticks=FALSE),
-      selectInput("f_quintile", "Income Quintile",
+      tags$h4("Household Income"),
+      sliderInput("f_decile",   "Household Income Decile",   1, 10,       c(1,10),       step=1, ticks=FALSE),
+      selectInput("f_quintile", "Household Income Quintile",
                   c("All"="all","1 — Lowest"="1","2"="2","3"="3",
                     "4"="4","5 — Highest"="5"), selected="all"),
 
@@ -823,9 +968,6 @@ server <- function(input, output, session) {
     df  <- filt()
     n   <- nrow(df)
     tot <- nrow(raw())
-    wt  <- if ("HHOLD_WGT" %in% names(df))
-             format(round(sum(df$HHOLD_WGT, na.rm=TRUE)), big.mark=",")
-           else NULL
     div(class = "record-bar",
       tags$span(
         style = "font-family:'Playfair Display',serif;font-size:14px;color:#3D2B1F;",
@@ -834,8 +976,7 @@ server <- function(input, output, session) {
       tags$span(class = "n-badge", format(n, big.mark=",")),
       tags$span(
         class = "weighted-note",
-        paste0("of ", format(tot, big.mark=","), " total"),
-        if (!is.null(wt)) paste0("  ·  ≈ ", wt, " weighted households")
+        paste0("of ", format(tot, big.mark=","), " total")
       )
     )
   })
@@ -855,10 +996,94 @@ server <- function(input, output, session) {
     )
   }
 
+  # ── Model Fit & Gini ─────────────────────────────────────────────────────────
+  # Fits the mode-parameterized contaminated lognormal to the CURRENT filtered
+  # selection only when the button is clicked (not on every filter tweak,
+  # since the multi-start optimization is too slow for that). withProgress()
+  # + incProgress() inside fit_cmLN_mode() give a live loading screen instead
+  # of the app appearing to freeze while it fits.
+  fit_result <- eventReactive(input$fit_btn, {
+    df <- isolate(filt())
+    x  <- df$INCOME
+    x  <- x[!is.na(x) & x > 0]
+    validate(need(length(x) >= 30,
+                  "Not enough filtered households (need at least 30) to fit a model. Widen your filters and try again."))
+
+    withProgress(message = "Fitting mode-parameterized contaminated log-normal model…", value = 0, {
+      fit <- fit_cmLN_mode(x, n_steps = 15)
+
+      g <- if (is.na(fit$logLik)) {
+        NULL
+      } else {
+        incProgress(0, detail = "Computing Gini coefficient…")
+        tryCatch(gini_coeff(fit$epsilon, fit$m, fit$sigma^2, fit$lambda),
+                 error = function(e) NULL)
+      }
+    })
+
+    list(fit = fit, gini = g, n = length(x), x = x)
+  })
+
+  # ── Plot: income histogram for the data used in the fit ─────────────────────
+  output$plt_fit_hist <- renderPlot({
+    res <- fit_result()
+    x   <- res$x
+    cap <- quantile(x, 0.95, na.rm = TRUE)
+    df2 <- data.frame(INCOME = x[x <= cap])
+
+    ggplot(df2, aes(x = INCOME)) +
+      geom_histogram(fill = "#A0522D", colour = "#3D2B1F", bins = 45, alpha = 0.9) +
+      scale_x_continuous(labels = label_dollar(prefix = "R ", big.mark = ",",
+                                                scale = 1e-3, suffix = "k")) +
+      scale_y_continuous(labels = comma) +
+      labs(x = "Annual Household Income", y = "Households",
+           subtitle = paste0("n = ", format(res$n, big.mark = ","), " · capped at 95th percentile")) +
+      theme_mcm()
+  }, bg = "#F5E6D3")
+
+  # ── Fitted cmLN parameter cards ──────────────────────────────────────────────
+  output$fit_params_ui <- renderUI({
+    res <- fit_result()
+    fit <- res$fit
+
+    if (is.na(fit$logLik)) {
+      return(stat_card("Fit Status", "Failed to converge — try widening your filters", "dark"))
+    }
+
+    tagList(
+      fluidRow(
+        column(6, stat_card("Mode (m)", fmt_r(fit$m))),
+        column(6, stat_card("Sigma", round(fit$sigma, 4), "dark"))
+      ),
+      fluidRow(
+        column(6, stat_card("Lambda", round(fit$lambda, 4), "tan")),
+        column(6, stat_card("Epsilon", round(fit$epsilon, 4)))
+      ),
+      fluidRow(
+        column(6, stat_card("Log-Likelihood", format(round(fit$logLik, 2), big.mark = ","), "dark")),
+        column(6, stat_card("Convergence Rate",
+                            paste0(round(100 * fit$n_converged / fit$n_tries, 1), "%"), "tan"))
+      )
+    )
+  })
+
+  # ── Gini coefficient card ────────────────────────────────────────────────────
+  output$gini_ui <- renderUI({
+    res <- fit_result()
+    g   <- res$gini
+
+    if (is.null(g)) {
+      return(stat_card("Gini Coefficient", "N/A — model fit failed", "dark"))
+    }
+    div(style = "max-width:320px;",
+      stat_card("Gini Coefficient", round(g$G, 4), "dark")
+    )
+  })
+
   # ── Stat cards ───────────────────────────────────────────────────────────────
   output$card1 <- renderUI({
     req(filt())
-    stat_card("Mode Annual Income",
+    stat_card("Mode Annual Household Income",
               fmt_r(density_mode(filt()$INCOME, na.rm=TRUE)))
   })
   output$card2 <- renderUI({
@@ -873,7 +1098,7 @@ server <- function(input, output, session) {
   })
   output$card4 <- renderUI({
     req(filt())
-    stat_card("Mean Annual Income",
+    stat_card("Mean Annual Household Income",
               fmt_r(mean(filt()$INCOME, na.rm=TRUE)))
   })
   output$card5 <- renderUI({
@@ -883,7 +1108,7 @@ server <- function(input, output, session) {
   })
   output$card6 <- renderUI({
     req(filt())
-    stat_card("Mode Income Per Capita",
+    stat_card("Mode Household Income Per Capita",
               fmt_r(density_mode(filt()$INCOME_PCP, na.rm=TRUE)), "tan")
   })
   output$card7 <- renderUI({
@@ -906,11 +1131,11 @@ server <- function(input, output, session) {
       group_by(Decile = INCOME_DECILE) %>%
       summarise(
         `Households` = n(),
-        `Mode Income (R)` = round(density_mode(INCOME, na.rm=TRUE)),
-        `Mean Income (R)`   = round(mean(INCOME,   na.rm=TRUE)),
+        `Mode Household Income (R)` = round(density_mode(INCOME, na.rm=TRUE)),
+        `Mean Household Income (R)`   = round(mean(INCOME,   na.rm=TRUE)),
         .groups = "drop"
       ) %>%
-      mutate(across(c(`Mode Income (R)`,`Mean Income (R)`),
+      mutate(across(c(`Mode Household Income (R)`,`Mean Household Income (R)`),
                     ~format(.x, big.mark=",")))
   },
   striped=TRUE, hover=TRUE, bordered=TRUE, rownames=FALSE,
@@ -928,7 +1153,7 @@ server <- function(input, output, session) {
       group_by(`Pop Group` = Group) %>%
       summarise(
         `N`                 = n(),
-        `Mode Income (R)` = format(round(density_mode(INCOME,       na.rm=TRUE)), big.mark=","),
+        `Mode Household Income (R)` = format(round(density_mode(INCOME,       na.rm=TRUE)), big.mark=","),
         `Mode Exp. (R)`   = format(round(density_mode(EXPENDITURE,  na.rm=TRUE)), big.mark=","),
         `Mode Inc/Cap (R)` = format(round(density_mode(INCOME_PCP,  na.rm=TRUE)), big.mark=","),
         .groups = "drop"
@@ -1020,7 +1245,7 @@ server <- function(input, output, session) {
       scale_y_continuous(labels=label_dollar(prefix="R ", big.mark=",",
                                               scale=1e-3, suffix="k"),
                          expand=expansion(mult=c(0,0.12))) +
-      labs(x="Income Decile", y="Mode Annual Income") +
+      labs(x="Household Income Decile", y="Mode Annual Household Income") +
       theme_mcm()
   }, bg="#F5E6D3")
 
@@ -1042,7 +1267,7 @@ server <- function(input, output, session) {
       scale_y_continuous(labels=label_dollar(prefix="R ", big.mark=",",
                                               scale=1e-3, suffix="k")) +
       coord_flip() +
-      labs(x=NULL, y="Annual Income", subtitle="Capped at 95th percentile") +
+      labs(x=NULL, y="Annual Household Income", subtitle="Capped at 95th percentile") +
       theme_mcm()
   }, bg="#F5E6D3")
 
@@ -1062,7 +1287,7 @@ server <- function(input, output, session) {
       scale_y_continuous(labels=label_dollar(prefix="R ", big.mark=",",
                                               scale=1e-3, suffix="k")) +
       scale_size_continuous(range=c(3,11), name="N households") +
-      labs(x="Household Size", y="Mode Income Per Capita",
+      labs(x="Household Size", y="Mode Household Income Per Capita",
            subtitle="Households with size 1–12 | point size = n households") +
       theme_mcm() +
       theme(legend.position="bottom")
@@ -1090,7 +1315,7 @@ server <- function(input, output, session) {
       scale_y_continuous(labels=label_dollar(prefix="R ", big.mark=",",
                                               scale=1e-3, suffix="k"),
                          expand=expansion(mult=c(0,0.14))) +
-      labs(x=NULL, y="Mode Annual Income") +
+      labs(x=NULL, y="Mode Annual Household Income") +
       theme_mcm() +
       theme(axis.text.x=element_text(angle=22, hjust=1, size=10))
   }, bg="#F5E6D3")
@@ -1110,7 +1335,7 @@ server <- function(input, output, session) {
       scale_y_continuous(labels=label_dollar(prefix="R ", big.mark=",",
                                               scale=1e-3, suffix="k")) +
       coord_flip() +
-      labs(x=NULL, y="Annual Income", subtitle="Capped at 95th percentile") +
+      labs(x=NULL, y="Annual Household Income", subtitle="Capped at 95th percentile") +
       theme_mcm()
   }, bg="#F5E6D3")
 
@@ -1133,7 +1358,7 @@ server <- function(input, output, session) {
       scale_y_continuous(labels=label_dollar(prefix="R ", big.mark=",",
                                               scale=1e-3, suffix="k"),
                          expand=expansion(mult=c(0,0.14))) +
-      labs(x=NULL, y="Mode Annual Income") +
+      labs(x=NULL, y="Mode Annual Household Income") +
       theme_mcm()
   }, bg="#F5E6D3")
 
@@ -1147,8 +1372,8 @@ server <- function(input, output, session) {
       group_by(Province) %>%
       summarise(
         `N`               = n(),
-        `Mode Income (R)` = format(round(density_mode(INCOME, na.rm=TRUE)), big.mark=","),
-        `Mean Income (R)` = format(round(mean(INCOME, na.rm=TRUE)), big.mark=","),
+        `Mode Household Income (R)` = format(round(density_mode(INCOME, na.rm=TRUE)), big.mark=","),
+        `Mean Household Income (R)` = format(round(mean(INCOME, na.rm=TRUE)), big.mark=","),
         .groups = "drop"
       ) %>%
       arrange(desc(N))
@@ -1169,8 +1394,8 @@ server <- function(input, output, session) {
       group_by(Settlement) %>%
       summarise(
         `N`                    = n(),
-        `Mode Income (R)`      = format(round(density_mode(INCOME, na.rm=TRUE)), big.mark=","),
-        `Mean Income (R)`      = format(round(mean(INCOME, na.rm=TRUE)), big.mark=","),
+        `Mode Household Income (R)`      = format(round(density_mode(INCOME, na.rm=TRUE)), big.mark=","),
+        `Mean Household Income (R)`      = format(round(mean(INCOME, na.rm=TRUE)), big.mark=","),
         `Mean Expenditure (R)` = format(round(mean(EXPENDITURE, na.rm=TRUE)), big.mark=","),
         .groups = "drop"
       )
