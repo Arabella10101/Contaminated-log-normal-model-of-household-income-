@@ -125,8 +125,12 @@ eq_fcmLN   <- r"(f_{cmLN}(x;\varepsilon,m,\sigma^2,\lambda)=\varepsilon\,f_{mLN}
 eq_loglik  <- r"(\ln L(\varepsilon,m,\sigma^2,\lambda)=\sum_{i=1}^{n}\ln\Big[\varepsilon\,f_{mLN}(x_i;m,\sigma^2)+(1-\varepsilon)\,f_{mLN}(x_i;m,\lambda\sigma^2)\Big])"
 eq_transf  <- r"(\tilde m=\ln m,\quad\tilde\sigma=\ln\sigma,\quad\tilde\lambda=\ln\!\left(\dfrac{\lambda-1}{\lambda_{hi}-\lambda}\right),\quad\tilde\varepsilon=\ln\!\left(\dfrac{\varepsilon-\varepsilon_{lo}}{1-\varepsilon}\right))"
 
-# One "step card" of the calculation log: a title, a (Display-mode) LaTeX
-# equation typeset by MathJax, and optional HTML detail lines underneath.
+# One "step card" of the calculation log: a title, one or more (Display-mode)
+# LaTeX equations typeset by MathJax, and optional HTML detail lines
+# underneath. eq_latex may be a single string or a character vector of
+# several equations -- each gets its OWN \[...\] block (and its own line),
+# since a bare "\\" line break inside \[...\] is only valid within an
+# align/gather environment, not plain display math.
 calc_step_card <- function(step_no, title, eq_latex, detail_html = "", status = "info", size = "normal") {
   cls <- switch(status,
     best = "calc-step calc-step-best",
@@ -135,9 +139,13 @@ calc_step_card <- function(step_no, title, eq_latex, detail_html = "", status = 
     "calc-step calc-step-info"
   )
   if (size == "live") cls <- paste(cls, "calc-step-live")
+  eq_html <- paste0(
+    sprintf(r"(<div class="calc-step-eq-line">\[%s\]</div>)", eq_latex),
+    collapse = ""
+  )
   sprintf(
-    r"(<div class="%s"><div class="calc-step-head"><span class="calc-step-num">Step %d</span><span class="calc-step-title">%s</span></div><div class="calc-step-eq">\[%s\]</div>%s</div>)",
-    cls, step_no, title, eq_latex,
+    r"(<div class="%s"><div class="calc-step-head"><span class="calc-step-num">Step %d</span><span class="calc-step-title">%s</span></div><div class="calc-step-eq">%s</div>%s</div>)",
+    cls, step_no, title, eq_html,
     if (nzchar(detail_html)) sprintf(r"(<div class="calc-step-detail">%s</div>)", detail_html) else ""
   )
 }
@@ -155,7 +163,7 @@ fit_cmLN_mode_animated <- function(x, on_step, n_steps = 15,
 
   on_step(
     title = "Model and objective function",
-    eq_latex = paste(eq_fmLN, eq_fcmLN, eq_loglik, eq_transf, sep = r"(\\[8pt])"),
+    eq_latex = c(eq_fmLN, eq_fcmLN, eq_loglik, eq_transf),
     detail_html = sprintf(
       r"(<div class="calc-line">Fitting to <b>n = %s</b> filtered households.</div><div class="calc-line">Starting values (held fixed across all %d multi-starts): \(\tilde m_0=\ln(%s)=%s\), \(\tilde\sigma_0=\ln(%s)=%s\)</div>)",
       format(length(x), big.mark = ","), n_steps,
@@ -260,6 +268,28 @@ fit_cmLN_mode_animated <- function(x, on_step, n_steps = 15,
     status = "done"
   )
 
+  pct_typical  <- round(100 * fit$epsilon, 1)
+  pct_outlying <- round(100 * (1 - fit$epsilon), 1)
+  on_step(
+    title = "What do these results mean?",
+    eq_latex = r"(\hat m,\quad \hat\varepsilon,\quad \hat\lambda)",
+    detail_html = paste0(
+      sprintf(
+        r"(<div class="calc-line">The modal household income is <b>%s</b> — the single most common income level among these households.</div>)",
+        fmt_r(fit$m)
+      ),
+      sprintf(
+        r"(<div class="calc-line">\(\hat\varepsilon=%s\) means about <b>%s%%</b> of households have "typical" incomes, while the remaining <b>%s%%</b> are "outlying" — more dispersed incomes that pull the distribution's right tail.</div>)",
+        fmt_num(fit$epsilon), fmt_num(pct_typical, 1), fmt_num(pct_outlying, 1)
+      ),
+      sprintf(
+        r"(<div class="calc-line">\(\hat\lambda=%s\) means those outlying incomes are about <b>%s×</b> more variable than typical ones — the higher this is, the more extreme the gap between ordinary and outlying households.</div>)",
+        fmt_num(fit$lambda), fmt_num(fit$lambda, 2)
+      )
+    ),
+    status = "info"
+  )
+
   fit
 }
 
@@ -294,10 +324,9 @@ gini_coeff_animated <- function(eps, m, s2, lam, on_step, tol = 1e-12) {
   X_hi <- uniroot(target, lower = m, upper = m * 1e8)$root
   on_step(
     title = "Contaminated CDF and integration cutoff",
-    eq_latex = paste(
+    eq_latex = c(
       r"(H(x;m,\sigma^2)=0.5+0.5\,\mathrm{erf}\!\left(\dfrac{\ln x-\ln m-\sigma^2}{\sqrt{2\sigma^2}}\right))",
-      r"(F(x;\varepsilon,m,\sigma^2,\lambda)=\varepsilon\,H(x;m,\sigma^2)+(1-\varepsilon)\,H(x;m,\lambda\sigma^2))",
-      sep = r"(\\[8pt])"
+      r"(F(x;\varepsilon,m,\sigma^2,\lambda)=\varepsilon\,H(x;m,\sigma^2)+(1-\varepsilon)\,H(x;m,\lambda\sigma^2))"
     ),
     detail_html = sprintf(
       r"(<div class="calc-line">Solved numerically for \(X_{hi}\) where \(1-F(X_{hi})=10^{-12}\): \(X_{hi}=%s\)</div>)",
@@ -645,6 +674,10 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
 .splash-start-btn:hover { background-color: #2E5A3E; border-color: #2E5A3E; }
 
 /* ── Interactive calculation log (Model Fit & Gini modal) ── */
+/* This app only ever opens one modal (the calc-log one), so it's safe to
+   drop Bootstrap's default modal-body padding globally -- the step cards
+   supply their own padding and should run edge-to-edge inside the modal. */
+.modal-body { padding: 0; }
 #calc-log-container {
   background-color: #FAF3EA;
   border: 1px solid #C4956A;
@@ -658,7 +691,7 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
   padding: 10px 14px;
   margin-bottom: 12px;
 }
-.calc-step-best { border-left-color: #2E5A3E; background-color: #E7F0E9; }
+.calc-step-best { border-left-color: #1F3D28; background-color: #A9CBAE; }
 .calc-step-fail { border-left-color: #A0522D; background-color: #F7E9E2; opacity: 0.88; }
 .calc-step-done { border-left-color: #3D2B1F; background-color: #EDD9C0; }
 .calc-step-head {
@@ -686,11 +719,11 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
   font-size: 13px;
   color: #3D2B1F;
   margin: 6px 0;
-  overflow-x: auto;
 }
+.calc-step-eq-line { margin: 6px 0; overflow-x: auto; }
 .calc-step-detail { font-size: 12px; color: #6B4226; line-height: 1.5; }
 .calc-line { margin: 2px 0; }
-.calc-line.calc-best    { color: #2E5A3E; font-weight: 700; }
+.calc-line.calc-best    { color: #1F3D28; font-weight: 700; }
 .calc-line.calc-notbest { color: #8B7D6B; }
 .calc-line.calc-fail    { color: #A0522D; font-weight: 700; }
 .calc-ready-banner {
@@ -704,6 +737,18 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
   margin-bottom: 14px;
 }
 
+.gini-explainer {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 28px 32px;
+  background-color: #EDD9C0;
+  border-left: 4px solid #D4783E;
+  border-radius: 4px;
+  font-size: 16px;
+  color: #3D2B1F;
+  line-height: 1.7;
+}
+
 /* ── Computing placeholder shown while the real math runs (no artificial delay) ── */
 .calc-computing {
   display: flex;
@@ -712,6 +757,7 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
   justify-content: center;
   min-height: 45vh;
   gap: 16px;
+  padding: 0 20px;
   font-family: 'Playfair Display', serif;
   font-size: 17px;
   color: #3D2B1F;
@@ -722,7 +768,11 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
 
 /* ── Live one-step-at-a-time slideshow (replayed at a strict, uniform pace,
    decoupled from how long the underlying computation actually took) ── */
-#calc-log-live { min-height: 52vh; display: flex; align-items: center; }
+/* flex-direction:column (not the row default) so the single child stretches
+   to fill the full width via the default cross-axis align-items:stretch --
+   a row flexbox would let a narrower card (e.g. a short optim/gini card)
+   shrink-wrap instead of reaching the edges like a wide one naturally would. */
+#calc-log-live { min-height: 52vh; display: flex; flex-direction: column; justify-content: center; }
 .calc-step-live {
   width: 100%;
   padding: 28px 34px;
@@ -730,7 +780,8 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
 }
 .calc-step-live .calc-step-num   { font-size: 13px; }
 .calc-step-live .calc-step-title { font-size: 21px; }
-.calc-step-live .calc-step-eq    { font-size: 19px; margin: 18px 0; }
+.calc-step-live .calc-step-eq    { font-size: 19px; margin: 12px 0; }
+.calc-step-live .calc-step-eq-line { margin: 12px 0; }
 .calc-step-live .calc-step-detail { font-size: 15px; line-height: 1.8; }
 "
 
@@ -757,22 +808,38 @@ ui <- fluidPage(
   ")),
 
   # ── Live calculation log (Model Fit & Gini modal) ──────────────────────────
-  # Each step is its own showModal() re-render. Scoped to a single element
-  # id (defaulting to the whole body only when no id is given) -- retypesetting
-  # the ENTIRE page on every one of ~20 rapid-fire steps is expensive and can
-  # race against showModal() tearing down the previous step's DOM nodes
-  # (MathJax trying to typeset an element that's already been removed).
-  tags$script(HTML("
+  # The modal's inner card is a renderUI()-bound uiOutput() that Shiny
+  # patches in place on every "Next" click; this message tells MathJax to
+  # typeset just that node (not the whole page -- cheap, and avoids racing
+  # a removed/replaced node elsewhere). Deferred via setTimeout + a couple
+  # of retries because this message and Shiny's own DOM patch for the
+  # renderUI output are queued independently and can arrive in either order.
+  tags$script(HTML(r"---(
     Shiny.addCustomMessageHandler('mathjax_retypeset', function(msg) {
-      if (!(window.MathJax && window.MathJax.Hub)) return;
-      var target = (msg && msg.id) ? document.getElementById(msg.id) : null;
-      if (target) {
-        MathJax.Hub.Queue(['Typeset', MathJax.Hub, target]);
-      } else {
-        MathJax.Hub.Queue(['Typeset', MathJax.Hub]);
+      var id = msg && msg.id;
+      var tries = 0;
+      function attempt() {
+        tries++;
+        if (!(window.MathJax && window.MathJax.Hub)) {
+          if (tries < 20) { setTimeout(attempt, 50); }
+          return;
+        }
+        var target = id ? document.getElementById(id) : null;
+        // The target element (a static div in the modal) can exist before
+        // Shiny has actually patched in the new renderUI content -- wait
+        // for the raw \(...\) / \[...\] markers to actually be present,
+        // not just the container, or MathJax typesets an empty/stale node.
+        var hasMath = target && /\\\(|\\\[/.test(target.innerHTML);
+        if (id && !hasMath && tries < 20) { setTimeout(attempt, 50); return; }
+        if (target) {
+          MathJax.Hub.Queue(['Typeset', MathJax.Hub, target]);
+        } else {
+          MathJax.Hub.Queue(['Typeset', MathJax.Hub]);
+        }
       }
+      setTimeout(attempt, 0);
     });
-  ")),
+  )---")),
 
   # ── App header ──
   div(class = "app-header",
@@ -942,9 +1009,16 @@ ui <- fluidPage(
               ),
               br(),
               fluidRow(
-                column(12,
+                column(6,
                   p(class = "section-head", "Gini Coefficient"),
                   uiOutput("gini_ui")
+                ),
+                column(6,
+                  div(class = "gini-explainer",
+                    "The Gini coefficient measures income inequality on a scale from 0 to 1: ",
+                    tags$b("0"), " means perfect equality (everyone earns the same), while ",
+                    tags$b("1"), " means perfect inequality (one household earns everything)."
+                  )
                 )
               )
             )
@@ -1264,23 +1338,62 @@ server <- function(input, output, session) {
   # ── Model Fit & Gini ─────────────────────────────────────────────────────────
   # Fits the mode-parameterized contaminated lognormal to the CURRENT filtered
   # selection only when the button is clicked (not on every filter tweak,
-  # since the multi-start optimization is too slow for that). withProgress()
-  # + incProgress() inside fit_cmLN_mode() give a live loading screen instead
-  # of the app appearing to freeze while it fits.
-  fit_result <- eventReactive(input$fit_btn, {
+  # since the multi-start optimization is too slow for that).
+  #
+  # ALL the real work (15 optim() multi-starts + the Gini derivation) runs
+  # up front, in the background, as fast as R can do it -- on_step() just
+  # RECORDS each step, no UI, no delay. Once that's done, a "Next ->" button
+  # in the modal pages through the already-computed steps one at a time, so
+  # there is never any waiting on a click -- the click only reveals a card
+  # that's already sitting there.
+  modal_title <- "Fitting the Mode-Parameterized Contaminated Log-Normal Model"
+  calc_steps  <- reactiveValues(list = NULL, idx = 0, x = NULL, fit = NULL, gini = NULL)
+  fit_result  <- reactiveVal(NULL)
+
+  # The modal's INNER content only -- bound to calc_steps$idx, so clicking
+  # "Next" just re-renders this one output in place (a targeted DOM patch)
+  # instead of the whole modal being torn down and rebuilt via showModal().
+  output$calc_step_ui <- renderUI({
+    req(calc_steps$list)
+    i <- calc_steps$idx
+    if (i < 1 || i > length(calc_steps$list)) return(NULL)
+    s <- calc_steps$list[[i]]
+    HTML(calc_step_card(i, s$title, s$eq_latex, s$detail_html, s$status, size = "live"))
+  })
+
+  # MathJax needs to be told explicitly to typeset calc_step_ui's new
+  # content each time it changes (scoped to just that node, cheap).
+  observeEvent(calc_steps$idx, {
+    req(calc_steps$list, calc_steps$idx >= 1, calc_steps$idx <= length(calc_steps$list))
+    session$sendCustomMessage("mathjax_retypeset", list(id = "calc-log-live"))
+  }, ignoreInit = TRUE)
+
+  # The modal's footer -- Back (hidden on step 1) + Next/"View Results" --
+  # also bound to calc_steps$idx so both buttons' presence/label stay
+  # correct as the user pages back and forth, without recreating the modal.
+  output$calc_footer_ui <- renderUI({
+    req(calc_steps$list)
+    i <- calc_steps$idx
+    n <- length(calc_steps$list)
+    if (i < 1 || i > n) return(NULL)
+    next_btn <- actionButton("calc_next_btn", if (i == n) "View Results ✓" else "Next →",
+                             class = "btn-mcm", style = "flex:1; width:auto;")
+    if (i <= 1) {
+      div(style = "display:flex; gap:10px;", next_btn)
+    } else {
+      back_btn <- actionButton("calc_back_btn", "← Back", class = "btn-mcm btn-reset",
+                               style = "flex:1; width:auto;")
+      div(style = "display:flex; gap:10px;", back_btn, next_btn)
+    }
+  })
+
+  observeEvent(input$fit_btn, {
     df <- isolate(filt())
     x  <- df$INCOME
     x  <- x[!is.na(x) & x > 0]
     validate(need(length(x) >= 30,
                   "Not enough filtered households (need at least 30) to fit a model. Widen your filters and try again."))
 
-    step_delay <- 3   # seconds EVERY step is shown for, uniformly (see below)
-    modal_title <- "Fitting the Mode-Parameterized Contaminated Log-Normal Model"
-
-    # ── Phase 1: run the real computation at full speed, no artificial delay.
-    # on_step() here only RECORDS each step (title/equation/detail/status) --
-    # it does not touch the UI -- so the 15 optim() multi-starts and the Gini
-    # derivation run exactly as fast as R can do them.
     showModal(modalDialog(
       title = modal_title, size = "l", easyClose = FALSE, footer = NULL,
       div(class = "calc-computing",
@@ -1294,8 +1407,21 @@ server <- function(input, output, session) {
                                           detail_html = detail_html, status = status)
     }
 
-    fit <- fit_cmLN_mode_animated(x, on_step = record, n_steps = 15)
+    # A generic glossary of what each parameter means, shown before any of
+    # the real computation results, so the equations that follow make sense.
+    record(
+      title = "What do the parameters mean?",
+      eq_latex = r"(m,\quad \sigma^2,\quad \lambda,\quad \varepsilon)",
+      detail_html = paste0(
+        r"(<div class="calc-line"><b>\(m\)</b> — the <i>mode</i>: the single most common household income value. This is the "typical" income the whole model is anchored around.</div>)",
+        r"(<div class="calc-line"><b>\(\sigma^2\)</b> — the <i>variance</i> of the typical-income group: how spread out "ordinary" incomes are around the mode.</div>)",
+        r"(<div class="calc-line"><b>\(\varepsilon\)</b> — the <i>proportion typical</i>: the probability a household's income comes from the ordinary (reference) group rather than the outlying group. So \(1-\varepsilon\) is the share of outlying incomes.</div>)",
+        r"(<div class="calc-line"><b>\(\lambda\)</b> — the <i>contamination inflation factor</i>, \(\lambda>1\): how much MORE variable the outlying incomes are than typical ones. A bigger \(\lambda\) means the outliers are more extreme.</div>)"
+      ),
+      status = "info"
+    )
 
+    fit <- fit_cmLN_mode_animated(x, on_step = record, n_steps = 15)
     g <- if (is.na(fit$logLik)) {
       NULL
     } else {
@@ -1303,42 +1429,64 @@ server <- function(input, output, session) {
                error = function(e) NULL)
     }
 
-    # ── Phase 2: replay the recorded steps one at a time, each filling the
-    # whole modal pane, for EXACTLY step_delay seconds -- fully decoupled
-    # from how long the real computation above took, so every step (a fast
-    # Gini line or a slow optim() call alike) gets the same time on screen.
-    log_acc <- character(0)
-    for (i in seq_along(steps)) {
-      s <- steps[[i]]
-      log_acc[[length(log_acc) + 1]] <- calc_step_card(i, s$title, s$eq_latex, s$detail_html, s$status, size = "normal")
-      showModal(modalDialog(
-        title = modal_title, size = "l", easyClose = FALSE, footer = NULL,
-        div(id = "calc-log-live",
-            HTML(calc_step_card(i, s$title, s$eq_latex, s$detail_html, s$status, size = "live")))
-      ))
-      # showModal()'s dynamic content isn't auto-typeset by MathJax on a
-      # repeated call within the same session, so trigger it explicitly --
-      # scoped to just this node (not the whole page) to keep each retypeset
-      # cheap and avoid racing with the next showModal() tearing this node down.
-      session$sendCustomMessage("mathjax_retypeset", list(id = "calc-log-live"))
-      Sys.sleep(step_delay)
-    }
+    calc_steps$list <- steps
+    calc_steps$idx  <- 1
+    calc_steps$x    <- x
+    calc_steps$fit  <- fit
+    calc_steps$gini <- g
+    # fit_result is intentionally left at its previous value (if any) until
+    # the user finishes paging through and clicks "View Results" -- so a
+    # re-run doesn't blank out the still-valid results panel underneath
+    # while the new one is being fitted/paged through.
 
     showModal(modalDialog(
-      title = modal_title, size = "l", easyClose = TRUE, footer = modalButton("Close"),
-      div(class = "calc-ready-banner",
-          "✓ Results ready — scroll through the log below, or close this window to view the summary."),
-      div(id = "calc-log-container", style = "max-height:65vh; overflow-y:auto; padding-right:8px;",
-          HTML(paste(log_acc, collapse = "")))
+      title = modal_title, size = "l", easyClose = FALSE,
+      footer = uiOutput("calc_footer_ui"),
+      div(id = "calc-log-live", uiOutput("calc_step_ui"))
     ))
-    session$sendCustomMessage("mathjax_retypeset", list())
+  })
 
-    list(fit = fit, gini = g, n = length(x), x = x)
+  observeEvent(input$calc_back_btn, {
+    req(calc_steps$list)
+    if (calc_steps$idx > 1) {
+      calc_steps$idx <- calc_steps$idx - 1
+    }
+  })
+
+  observeEvent(input$calc_next_btn, {
+    # Guards against a stray/duplicate click (e.g. a double-click, or one
+    # landing on the modal backdrop right as it swaps to the "results ready"
+    # state) re-running the finalize branch or operating on stale state.
+    req(calc_steps$list)
+    if (calc_steps$idx > length(calc_steps$list)) return(invisible())
+
+    if (calc_steps$idx < length(calc_steps$list)) {
+      calc_steps$idx <- calc_steps$idx + 1
+    } else {
+      calc_steps$idx <- calc_steps$idx + 1   # marks this run as finalized
+
+      log_acc <- vapply(seq_along(calc_steps$list), function(i) {
+        s <- calc_steps$list[[i]]
+        calc_step_card(i, s$title, s$eq_latex, s$detail_html, s$status, size = "normal")
+      }, character(1))
+
+      showModal(modalDialog(
+        title = modal_title, size = "l", easyClose = TRUE, footer = modalButton("Close"),
+        div(class = "calc-ready-banner",
+            "✓ Results ready — scroll through the log below, or close this window to view the summary."),
+        div(id = "calc-log-container", style = "max-height:65vh; overflow-y:auto; padding-right:8px;",
+            HTML(paste(log_acc, collapse = "")))
+      ))
+      session$sendCustomMessage("mathjax_retypeset", list())
+
+      fit_result(list(fit = calc_steps$fit, gini = calc_steps$gini, n = length(calc_steps$x), x = calc_steps$x))
+    }
   })
 
   # ── Plot: income histogram for the data used in the fit ─────────────────────
   output$plt_fit_hist <- renderPlot({
     res <- fit_result()
+    req(res, res$x)
     x   <- res$x
     cap <- quantile(x, 0.95, na.rm = TRUE)
     df2 <- data.frame(INCOME = x[x <= cap])
@@ -1356,6 +1504,7 @@ server <- function(input, output, session) {
   # ── Fitted cmLN parameter cards ──────────────────────────────────────────────
   output$fit_params_ui <- renderUI({
     res <- fit_result()
+    req(res, res$fit)
     fit <- res$fit
 
     if (is.na(fit$logLik)) {
@@ -1382,6 +1531,7 @@ server <- function(input, output, session) {
   # ── Gini coefficient card ────────────────────────────────────────────────────
   output$gini_ui <- renderUI({
     res <- fit_result()
+    req(res)
     g   <- res$gini
 
     if (is.null(g)) {
