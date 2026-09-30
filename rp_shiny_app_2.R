@@ -27,7 +27,6 @@ dwell_lbl   <- c("1"="Formal house/brick","2"="Traditional hut",
                  "7"="House/flat in backyard","8"="Informal shack (backyard)",
                  "9"="Informal shack (other)","10"="Room/granny flat",
                  "11"="Caravan/tent","12"="Other")
-elec_lbl    <- c("1"="Yes","2"="No")
 province_lbl    <- c("1"="Western Cape","2"="Eastern Cape","3"="Northern Cape",
                      "4"="Free State","5"="KwaZulu-Natal","6"="North West",
                      "7"="Gauteng","8"="Mpumalanga","9"="Limpopo")
@@ -123,7 +122,6 @@ fmt_num <- function(x, digits = 4) format(round(x, digits), big.mark = ",", nsma
 eq_fmLN    <- r"(f_{mLN}(x;m,\sigma^2)=\dfrac{1}{x\sigma\sqrt{2\pi}}\exp\!\left[-\dfrac{(\ln(x/m)-\sigma^2)^2}{2\sigma^2}\right])"
 eq_fcmLN   <- r"(f_{cmLN}(x;\varepsilon,m,\sigma^2,\lambda)=\varepsilon\,f_{mLN}(x;m,\sigma^2)+(1-\varepsilon)\,f_{mLN}(x;m,\lambda\sigma^2))"
 eq_loglik  <- r"(\ln L(\varepsilon,m,\sigma^2,\lambda)=\sum_{i=1}^{n}\ln\Big[\varepsilon\,f_{mLN}(x_i;m,\sigma^2)+(1-\varepsilon)\,f_{mLN}(x_i;m,\lambda\sigma^2)\Big])"
-eq_transf  <- r"(\tilde m=\ln m,\quad\tilde\sigma=\ln\sigma,\quad\tilde\lambda=\ln\!\left(\dfrac{\lambda-1}{\lambda_{hi}-\lambda}\right),\quad\tilde\varepsilon=\ln\!\left(\dfrac{\varepsilon-\varepsilon_{lo}}{1-\varepsilon}\right))"
 
 # One "step card" of the calculation log: a title, one or more (Display-mode)
 # LaTeX equations typeset by MathJax, and optional HTML detail lines
@@ -131,7 +129,7 @@ eq_transf  <- r"(\tilde m=\ln m,\quad\tilde\sigma=\ln\sigma,\quad\tilde\lambda=\
 # several equations -- each gets its OWN \[...\] block (and its own line),
 # since a bare "\\" line break inside \[...\] is only valid within an
 # align/gather environment, not plain display math.
-calc_step_card <- function(step_no, title, eq_latex, detail_html = "", status = "info", size = "normal") {
+calc_step_card <- function(title, eq_latex, detail_html = "", status = "info", size = "normal") {
   cls <- switch(status,
     best = "calc-step calc-step-best",
     fail = "calc-step calc-step-fail",
@@ -144,17 +142,16 @@ calc_step_card <- function(step_no, title, eq_latex, detail_html = "", status = 
     collapse = ""
   )
   sprintf(
-    r"(<div class="%s"><div class="calc-step-head"><span class="calc-step-num">Step %d</span><span class="calc-step-title">%s</span></div><div class="calc-step-eq">%s</div>%s</div>)",
-    cls, step_no, title, eq_html,
+    r"(<div class="%s"><div class="calc-step-head"><span class="calc-step-title">%s</span></div><div class="calc-step-eq">%s</div>%s</div>)",
+    cls, title, eq_html,
     if (nzchar(detail_html)) sprintf(r"(<div class="calc-step-detail">%s</div>)", detail_html) else ""
   )
 }
 
-# Runs the multi-start search exactly as fit_cmLN_mode() used to, but instead
-# of a plain progress bar it calls on_step(title, eq_latex, detail_html,
-# status) once per optim() attempt (converged or not) so the caller can
-# render a live, worked-math log of every step -- including which attempt is
-# the current running-maximum log-likelihood.
+# Runs the 15-start optim() search in the background and calls
+# on_step(title, eq_latex, detail_html, status) for the slides shown in the
+# walkthrough: the model/objective, the selected best fit, and what the
+# fitted values mean. Individual optim() attempts are not shown.
 fit_cmLN_mode_animated <- function(x, on_step, n_steps = 15,
                                    base_lambda = 1, base_eps = 0.99,
                                    lambda_step = 0.5, eps_step = -0.032) {
@@ -163,11 +160,10 @@ fit_cmLN_mode_animated <- function(x, on_step, n_steps = 15,
 
   on_step(
     title = "Model and objective function",
-    eq_latex = c(eq_fmLN, eq_fcmLN, eq_loglik, eq_transf),
+    eq_latex = c(eq_fmLN, eq_fcmLN),
     detail_html = sprintf(
-      r"(<div class="calc-line">Fitting to <b>n = %s</b> filtered households.</div><div class="calc-line">Starting values (held fixed across all %d multi-starts): \(\tilde m_0=\ln(%s)=%s\), \(\tilde\sigma_0=\ln(%s)=%s\)</div>)",
-      format(length(x), big.mark = ","), n_steps,
-      fmt_num(start_m, 2), fmt_num(log(start_m)), fmt_num(start_sigma, 4), fmt_num(log(start_sigma))
+      r"(<div class="calc-line">Fitting to <b>n = %s</b> filtered households.</div>)",
+      format(length(x), big.mark = ",")
     ),
     status = "info"
   )
@@ -175,7 +171,6 @@ fit_cmLN_mode_animated <- function(x, on_step, n_steps = 15,
   results         <- vector("list", n_steps)
   converged_flags <- logical(n_steps)
   logliks         <- rep(NA_real_, n_steps)
-  best_so_far     <- -Inf
 
   for (i in seq_len(n_steps)) {
     curr_L <- max(1.001, min(cmLN_lam_hi - 0.001, base_lambda + i * lambda_step))
@@ -187,50 +182,11 @@ fit_cmLN_mode_animated <- function(x, on_step, n_steps = 15,
                      control = list(fnscale = -1, maxit = 2000)),
                silent = TRUE)
 
-    ok <- !(inherits(est, "try-error") || !is.finite(est$value) || est$convergence != 0)
-
-    init_detail <- sprintf(
-      r"(<div class="calc-line">Initial guess: \(\lambda_0=%s,\ \varepsilon_0=%s\ \Rightarrow\ \tilde\lambda_0=%s,\ \tilde\varepsilon_0=%s\)</div>)",
-      fmt_num(curr_L, 3), fmt_num(curr_E, 3), fmt_num(cmLN_inv_lam(curr_L)), fmt_num(cmLN_inv_eps(curr_E))
-    )
-
-    if (!ok) {
-      on_step(
-        title = sprintf("Optim call %d of %d — did not converge", i, n_steps),
-        eq_latex = eq_loglik,
-        detail_html = paste0(init_detail, r"(<div class="calc-line calc-fail">✗ Optimizer failed to converge — skipped.</div>)"),
-        status = "fail"
-      )
-      next
-    }
+    if (inherits(est, "try-error") || !is.finite(est$value) || est$convergence != 0) next
 
     converged_flags[i] <- TRUE
-    logliks[i]          <- est$value
-    results[[i]]         <- est
-
-    par       <- est$par
-    m_i       <- exp(par[1]); sigma_i <- exp(par[2])
-    lambda_i  <- 1 + (cmLN_lam_hi - 1) / (1 + exp(-par[3]))
-    epsilon_i <- cmLN_eps_lo + (1 - cmLN_eps_lo) / (1 + exp(-par[4]))
-
-    is_new_best <- est$value > best_so_far
-    prev_best_txt <- if (i == 1 || all(!converged_flags[seq_len(i - 1)])) "none yet" else fmt_num(max(logliks[seq_len(i - 1)], na.rm = TRUE), 2)
-    if (is_new_best) best_so_far <- est$value
-
-    result_detail <- sprintf(
-      r"(<div class="calc-line">Output: \(\hat m=%s,\ \hat\sigma^2=%s,\ \hat\lambda=%s,\ \hat\varepsilon=%s\)</div><div class="calc-line">\(\ln\hat L=%s\)</div><div class="calc-line %s">%s</div>)",
-      fmt_r(m_i), fmt_num(sigma_i^2), fmt_num(lambda_i), fmt_num(epsilon_i), fmt_num(est$value, 2),
-      if (is_new_best) "calc-best" else "calc-notbest",
-      if (is_new_best) sprintf("\U0001F3C6 New maximum log-likelihood (previous best: %s)", prev_best_txt)
-      else sprintf("Below current maximum of %s", fmt_num(best_so_far, 2))
-    )
-
-    on_step(
-      title = sprintf("Optim call %d of %d%s", i, n_steps, if (is_new_best) " — new best" else ""),
-      eq_latex = eq_loglik,
-      detail_html = paste0(init_detail, result_detail),
-      status = if (is_new_best) "best" else "info"
-    )
+    logliks[i]         <- est$value
+    results[[i]]       <- est
   }
 
   n_converged <- sum(converged_flags)
@@ -265,26 +221,31 @@ fit_cmLN_mode_animated <- function(x, on_step, n_steps = 15,
       r"(<div class="calc-line">\(\hat m=%s,\ \hat\sigma^2=%s,\ \hat\lambda=%s,\ \hat\varepsilon=%s,\ \ln\hat L=%s\)</div>)",
       fmt_r(fit$m), fmt_num(fit$sigma^2), fmt_num(fit$lambda), fmt_num(fit$epsilon), fmt_num(fit$logLik, 2)
     ),
-    status = "done"
+    status = "best"
   )
 
   pct_typical  <- round(100 * fit$epsilon, 1)
   pct_outlying <- round(100 * (1 - fit$epsilon), 1)
   on_step(
     title = "What do these results mean?",
-    eq_latex = r"(\hat m,\quad \hat\varepsilon,\quad \hat\lambda)",
+    eq_latex = r"(\hat m,\quad \hat\sigma^2,\quad \hat\varepsilon,\quad \hat\lambda)",
     detail_html = paste0(
       sprintf(
         r"(<div class="calc-line">The modal household income is <b>%s</b> — the single most common income level among these households.</div>)",
         fmt_r(fit$m)
       ),
       sprintf(
-        r"(<div class="calc-line">\(\hat\varepsilon=%s\) means about <b>%s%%</b> of households have "typical" incomes, while the remaining <b>%s%%</b> are "outlying" — more dispersed incomes that pull the distribution's right tail.</div>)",
+        r"(<div class="calc-line">\(\hat\sigma^2=%s\) is the variance of the reference distribution: it measures how spread out typical household incomes are around the mode.</div>)",
+        fmt_num(fit$sigma^2)
+      ),
+      sprintf(
+        r"(<div class="calc-line">\(\hat\varepsilon=%s\) means about <b>%s%%</b> of households have typical incomes, while the remaining <b>%s%%</b> are outlying.</div>)",
         fmt_num(fit$epsilon), fmt_num(pct_typical, 1), fmt_num(pct_outlying, 1)
       ),
       sprintf(
-        r"(<div class="calc-line">\(\hat\lambda=%s\) means those outlying incomes are about <b>%s×</b> more variable than typical ones — the higher this is, the more extreme the gap between ordinary and outlying households.</div>)",
-        fmt_num(fit$lambda), fmt_num(fit$lambda, 2)
+        r"(<div class="calc-line">\(\hat\lambda=%s\) inflates the variance of the contaminated distribution: outlying incomes have variance \(\hat\lambda\hat\sigma^2=%s\times%s=%s\), about <b>%s×</b> the variance of typical incomes.</div>)",
+        fmt_num(fit$lambda), fmt_num(fit$lambda), fmt_num(fit$sigma^2),
+        fmt_num(fit$lambda * fit$sigma^2), fmt_num(fit$lambda, 2)
       )
     ),
     status = "info"
@@ -293,69 +254,38 @@ fit_cmLN_mode_animated <- function(x, on_step, n_steps = 15,
   fit
 }
 
-# Computes the Gini coefficient exactly as gini_coeff() used to, but calls
-# on_step() once per equation (2)-(4) from the report's appendix, so the
-# derivation from the fitted parameters to the final G is shown worked out.
-gini_coeff_animated <- function(eps, m, s2, lam, on_step, tol = 1e-12) {
-  EX_ref <- m * exp(1.5 * s2)
-  on_step(
-    title = "Expected value of the reference component",
-    eq_latex = r"(E(X;m,\sigma^2)=m\,e^{1.5\sigma^2})",
-    detail_html = sprintf(
-      r"(<div class="calc-line">\(E(X;m,\sigma^2)=%s\times e^{1.5\times\,%s}=%s\)</div>)",
-      fmt_r(m), fmt_num(s2), fmt_r(EX_ref)
-    ),
-    status = "info"
-  )
+# South Africa's current Gini, as cited in the report (World Bank, 2022).
+sa_gini_wb      <- 0.541
+sa_gini_wb_year <- 2022
 
-  EX_out <- m * exp(1.5 * lam * s2)
+# Computes the Gini coefficient exactly as gini_coeff() used to, then calls
+# on_step() once with a plain-language summary comparing the fitted value to
+# South Africa's current (World Bank) Gini.
+gini_coeff_animated <- function(eps, m, s2, lam, on_step, tol = 1e-12) {
   mu <- cmLN_EX_contam(eps, m, s2, lam)
-  on_step(
-    title = "Expected value of the contaminated model",
-    eq_latex = r"(E(X;\varepsilon,m,\sigma^2,\lambda)=\varepsilon\,E(X;m,\sigma^2)+(1-\varepsilon)\,E(X;m,\lambda\sigma^2))",
-    detail_html = sprintf(
-      r"(<div class="calc-line">\(E(X)=%s\times\,%s+%s\times\,%s=%s\)</div>)",
-      fmt_num(eps, 4), fmt_r(EX_ref), fmt_num(1 - eps, 4), fmt_r(EX_out), fmt_r(mu)
-    ),
-    status = "info"
-  )
 
   target <- function(x) (1 - cmLN_F_contam(x, eps, m, s2, lam)) - tol
   X_hi <- uniroot(target, lower = m, upper = m * 1e8)$root
-  on_step(
-    title = "Contaminated CDF and integration cutoff",
-    eq_latex = c(
-      r"(H(x;m,\sigma^2)=0.5+0.5\,\mathrm{erf}\!\left(\dfrac{\ln x-\ln m-\sigma^2}{\sqrt{2\sigma^2}}\right))",
-      r"(F(x;\varepsilon,m,\sigma^2,\lambda)=\varepsilon\,H(x;m,\sigma^2)+(1-\varepsilon)\,H(x;m,\lambda\sigma^2))"
-    ),
-    detail_html = sprintf(
-      r"(<div class="calc-line">Solved numerically for \(X_{hi}\) where \(1-F(X_{hi})=10^{-12}\): \(X_{hi}=%s\)</div>)",
-      fmt_r(X_hi)
-    ),
-    status = "info"
-  )
 
   survival_sq <- function(x) (1 - cmLN_F_contam(x, eps, m, s2, lam))^2
   integrand_t <- function(t) { xx <- exp(t); survival_sq(xx) * xx }
   res <- integrate(integrand_t, lower = log(1e-6), upper = log(X_hi),
                    rel.tol = 1e-10, subdivisions = 1000)
-  on_step(
-    title = "Numerical integral",
-    eq_latex = r"(\int_0^{\infty}\left[1-F(x;\varepsilon,m,\sigma^2,\lambda)\right]^2\,dx)",
-    detail_html = sprintf(
-      r"(<div class="calc-line">Evaluated via R's <code>integrate()</code> on a log-scale substitution \(x=e^t\) for numerical stability.</div><div class="calc-line">Result \(=%s\) (estimated error \(%s\))</div>)",
-      format(res$value, scientific = TRUE, digits = 6), format(res$abs.error, scientific = TRUE, digits = 3)
-    ),
-    status = "info"
-  )
 
   G <- 1 - res$value / mu
   on_step(
     title = "Gini coefficient",
-    eq_latex = r"(G(\varepsilon,m,\sigma^2,\lambda)=1-\dfrac{1}{E(X;\varepsilon,m,\sigma^2,\lambda)}\int_0^{\infty}\left[1-F(x;\varepsilon,m,\sigma^2,\lambda)\right]^2dx)",
-    detail_html = sprintf(
-      r"(<div class="calc-line">\(G=1-\dfrac{%s}{%s}=%s\)</div>)",
-      format(res$value, scientific = TRUE, digits = 6), fmt_r(mu), fmt_num(G, 4)
+    eq_latex = sprintf(r"(\hat G=%s)", fmt_num(G, 4)),
+    detail_html = paste0(
+      r"(<div class="calc-line">The Gini coefficient measures income inequality on a scale from 0 to 1: <b>0</b> means perfect equality (every household earns the same), while <b>1</b> means perfect inequality (one household earns everything).</div>)",
+      sprintf(
+        r"(<div class="calc-line">Calculated from the fitted mode parameterized contaminated log-normal model: <b>%s</b>.</div>)",
+        fmt_num(G, 4)
+      ),
+      sprintf(
+        r"(<div class="calc-line">South Africa's current Gini coefficient (World Bank, %d): <b>%s</b>.</div>)",
+        sa_gini_wb_year, fmt_num(sa_gini_wb, 3)
+      )
     ),
     status = "done"
   )
@@ -563,7 +493,14 @@ body {
 }
 .stat-card-dark { background: linear-gradient(135deg, #3D2B1F, #6B4226); }
 .stat-card-tan  { background: linear-gradient(135deg, #C4956A, #D4783E); }
-.stat-card-tan .stat-label { color: #3D2B1F80; }
+.stat-card-tan .stat-label { color: #3D2B1F; }
+
+/* At-a-glance cards: Bootstrap 3 columns are floats, so one taller card (a
+   label that wraps to two lines) snags the next row and leaves gaps. A flex
+   row keeps each row aligned and stretches every card to the row's height. */
+.ind-card-row { display: flex; flex-wrap: wrap; }
+.ind-card-row > [class*='col-'] { display: flex; }
+.ind-card-row .stat-card { width: 100%; }
 .stat-card-tan .stat-value { color: #3D2B1F; }
 .stat-label {
   font-size: 9px;
@@ -701,14 +638,6 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
   gap: 10px;
   margin-bottom: 6px;
 }
-.calc-step-num {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 1.2px;
-  color: #8B7D6B;
-  font-weight: 700;
-  white-space: nowrap;
-}
 .calc-step-title {
   font-family: 'Playfair Display', serif;
   font-size: 14px;
@@ -723,8 +652,6 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
 .calc-step-eq-line { margin: 6px 0; overflow-x: auto; }
 .calc-step-detail { font-size: 12px; color: #6B4226; line-height: 1.5; }
 .calc-line { margin: 2px 0; }
-.calc-line.calc-best    { color: #1F3D28; font-weight: 700; }
-.calc-line.calc-notbest { color: #8B7D6B; }
 .calc-line.calc-fail    { color: #A0522D; font-weight: 700; }
 .calc-ready-banner {
   background-color: #2E5A3E;
@@ -778,7 +705,6 @@ table.summary-tbl tr:hover td { background-color: #EDD9C0; }
   padding: 28px 34px;
   margin-bottom: 0;
 }
-.calc-step-live .calc-step-num   { font-size: 13px; }
 .calc-step-live .calc-step-title { font-size: 21px; }
 .calc-step-live .calc-step-eq    { font-size: 19px; margin: 12px 0; }
 .calc-step-live .calc-step-eq-line { margin: 12px 0; }
@@ -843,7 +769,7 @@ ui <- fluidPage(
 
   # ── App header ──
   div(class = "app-header",
-    tags$h1("\U0001F3E0  IES 2022/23 — Household Income Explorer"),
+    tags$h1("\U0001F3E0  Mode Parameterized Contaminated Log-Normal Model of South African Household Income"),
     tags$p("Income and Expenditure Survey · Statistics South Africa · Microdata Explorer")
   ),
 
@@ -982,9 +908,11 @@ ui <- fluidPage(
           # ── Tab 6: Model Fit & Gini ──
           tabPanel("\U0001F9EE  Model Fit & Gini",
             br(),
-            p(class = "section-head", "Mode-Parameterized Contaminated Log-Normal Fit"),
+            p(class = "section-head", "Mode Parameterized Contaminated Log-Normal Fit"),
             p(style = "color:#6B4226;",
-              "Fits a two-component mode-parameterized contaminated log-normal model to the currently filtered household income data using a multi-start log-likelihood search, then computes the Gini coefficient from the fitted parameters."),
+              "Fits a mode parameterized contaminated log-normal model to the currently filtered household income data using ",
+              tags$code("optim()"),
+              " then computes the Gini coefficient from the fitted parameters."),
             actionButton("fit_btn", "▶ Calculate Fit & Gini", class = "btn-mcm",
                         style = "width:260px;"),
             br(), br(),
@@ -1003,7 +931,7 @@ ui <- fluidPage(
                   plotOutput("plt_fit_hist", height = "280px")
                 ),
                 column(6,
-                  p(class = "section-head", "Fitted Mode-Parameterized Contaminated Log-Normal Parameters"),
+                  p(class = "section-head", "Fitted Mode Parameterized Contaminated Log-Normal Parameters"),
                   uiOutput("fit_params_ui")
                 )
               ),
@@ -1346,7 +1274,7 @@ server <- function(input, output, session) {
   # in the modal pages through the already-computed steps one at a time, so
   # there is never any waiting on a click -- the click only reveals a card
   # that's already sitting there.
-  modal_title <- "Fitting the Mode-Parameterized Contaminated Log-Normal Model"
+  modal_title <- "Fitting the Mode Parameterized Contaminated Log-Normal Model"
   calc_steps  <- reactiveValues(list = NULL, idx = 0, x = NULL, fit = NULL, gini = NULL)
   fit_result  <- reactiveVal(NULL)
 
@@ -1358,7 +1286,7 @@ server <- function(input, output, session) {
     i <- calc_steps$idx
     if (i < 1 || i > length(calc_steps$list)) return(NULL)
     s <- calc_steps$list[[i]]
-    HTML(calc_step_card(i, s$title, s$eq_latex, s$detail_html, s$status, size = "live"))
+    HTML(calc_step_card(s$title, s$eq_latex, s$detail_html, s$status, size = "live"))
   })
 
   # MathJax needs to be told explicitly to typeset calc_step_ui's new
@@ -1398,7 +1326,7 @@ server <- function(input, output, session) {
       title = modal_title, size = "l", easyClose = FALSE, footer = NULL,
       div(class = "calc-computing",
           div(class = "calc-spinner", "⚙"),
-          div("Running the optimization…"))
+          div("Loading…"))
     ))
 
     steps <- list()
@@ -1413,10 +1341,10 @@ server <- function(input, output, session) {
       title = "What do the parameters mean?",
       eq_latex = r"(m,\quad \sigma^2,\quad \lambda,\quad \varepsilon)",
       detail_html = paste0(
-        r"(<div class="calc-line"><b>\(m\)</b> — the <i>mode</i>: the single most common household income value. This is the "typical" income the whole model is anchored around.</div>)",
-        r"(<div class="calc-line"><b>\(\sigma^2\)</b> — the <i>variance</i> of the typical-income group: how spread out "ordinary" incomes are around the mode.</div>)",
-        r"(<div class="calc-line"><b>\(\varepsilon\)</b> — the <i>proportion typical</i>: the probability a household's income comes from the ordinary (reference) group rather than the outlying group. So \(1-\varepsilon\) is the share of outlying incomes.</div>)",
-        r"(<div class="calc-line"><b>\(\lambda\)</b> — the <i>contamination inflation factor</i>, \(\lambda>1\): how much MORE variable the outlying incomes are than typical ones. A bigger \(\lambda\) means the outliers are more extreme.</div>)"
+        r"(<div class="calc-line"><b>\(m\)</b> — the mode: the single most common household income value. \(m>0\).</div>)",
+        r"(<div class="calc-line"><b>\(\sigma^2\)</b> — the variance of the distribution. \(\sigma^2>0\).</div>)",
+        r"(<div class="calc-line"><b>\(\lambda\)</b> — indicates the degree of contamination and is an inflation parameter, i.e. the increase in variability due to a point that does not come from the reference distribution. \(\lambda>1\).</div>)",
+        r"(<div class="calc-line"><b>\(\varepsilon\)</b> — represents the probability that an observation belongs to the reference distribution. \(\varepsilon\in(0,1)\).</div>)"
       ),
       status = "info"
     )
@@ -1467,7 +1395,7 @@ server <- function(input, output, session) {
 
       log_acc <- vapply(seq_along(calc_steps$list), function(i) {
         s <- calc_steps$list[[i]]
-        calc_step_card(i, s$title, s$eq_latex, s$detail_html, s$status, size = "normal")
+        calc_step_card(s$title, s$eq_latex, s$detail_html, s$status, size = "normal")
       }, character(1))
 
       showModal(modalDialog(
@@ -1521,9 +1449,7 @@ server <- function(input, output, session) {
         column(6, stat_card("Epsilon", round(fit$epsilon, 4)))
       ),
       fluidRow(
-        column(6, stat_card("Log-Likelihood", format(round(fit$logLik, 2), big.mark = ","), "dark")),
-        column(6, stat_card("Convergence Rate",
-                            paste0(round(100 * fit$n_converged / fit$n_tries, 1), "%"), "tan"))
+        column(6, stat_card("Log-Likelihood", format(round(fit$logLik, 2), big.mark = ","), "dark"))
       )
     )
   })
@@ -1534,11 +1460,14 @@ server <- function(input, output, session) {
     req(res)
     g   <- res$gini
 
-    if (is.null(g)) {
-      return(stat_card("Gini Coefficient", "N/A — model fit failed", "dark"))
+    calc_card <- if (is.null(g)) {
+      stat_card("Gini Coefficient", "N/A — model fit failed", "dark")
+    } else {
+      stat_card("Gini Coefficient", round(g$G, 4), "dark")
     }
     div(style = "max-width:320px;",
-      stat_card("Gini Coefficient", round(g$G, 4), "dark")
+      calc_card,
+      stat_card(sprintf("South Africa — World Bank (%d)", sa_gini_wb_year), sa_gini_wb, "tan")
     )
   })
 
@@ -1617,12 +1546,11 @@ server <- function(input, output, session) {
         `N`                 = n(),
         `Mode Household Income (R)` = format(round(density_mode(INCOME,       na.rm=TRUE)), big.mark=","),
         `Mode Exp. (R)`   = format(round(density_mode(EXPENDITURE,  na.rm=TRUE)), big.mark=","),
-        `Mode Inc/Cap (R)` = format(round(density_mode(INCOME_PCP,  na.rm=TRUE)), big.mark=","),
         .groups = "drop"
       )
   },
   striped=TRUE, hover=TRUE, bordered=TRUE, rownames=FALSE,
-  align="lcccc",
+  align="lccc",
   width="100%")
 
   # ── Data table ───────────────────────────────────────────────────────────────
@@ -1630,9 +1558,8 @@ server <- function(input, output, session) {
     req(filt())
 
     display_cols <- c("UQNO","HEAD_SEX","HEAD_AGE","HEAD_POPULATION","HSIZE",
-                      "PRESENT_STATUS","ENG_ACCESS","INCOME","EXPENDITURE",
-                      "INCOME_PCP","EXPENDITURE_PCP",
-                      "INCOME_DECILE","INCOME_QUINTILE","HHOLD_WGT")
+                      "PRESENT_STATUS","INCOME","EXPENDITURE",
+                      "INCOME_DECILE","INCOME_QUINTILE")
 
     avail <- display_cols[display_cols %in% names(filt())]
     df    <- filt()[, avail, drop=FALSE]
@@ -1644,12 +1571,10 @@ server <- function(input, output, session) {
       df$HEAD_POPULATION <- dplyr::recode(as.character(df$HEAD_POPULATION), !!!pop_lbl,    .default="?")
     if ("PRESENT_STATUS"  %in% names(df))
       df$PRESENT_STATUS  <- dplyr::recode(as.character(df$PRESENT_STATUS),  !!!status_lbl, .default="?")
-    if ("ENG_ACCESS"      %in% names(df))
-      df$ENG_ACCESS      <- dplyr::recode(as.character(df$ENG_ACCESS),      !!!elec_lbl,   .default="?")
 
     names(df) <- gsub("_", " ", names(df))
 
-    num_cols <- c("INCOME","EXPENDITURE","INCOME PCP","EXPENDITURE PCP")
+    num_cols <- c("INCOME","EXPENDITURE")
     num_cols <- num_cols[num_cols %in% names(df)]
 
     dt <- datatable(df,
@@ -1858,12 +1783,11 @@ server <- function(input, output, session) {
         `N`                    = n(),
         `Mode Household Income (R)`      = format(round(density_mode(INCOME, na.rm=TRUE)), big.mark=","),
         `Mean Household Income (R)`      = format(round(mean(INCOME, na.rm=TRUE)), big.mark=","),
-        `Mean Expenditure (R)` = format(round(mean(EXPENDITURE, na.rm=TRUE)), big.mark=","),
         .groups = "drop"
       )
   },
   striped=TRUE, hover=TRUE, bordered=TRUE, rownames=FALSE,
-  align="lcccc",
+  align="lccc",
   width="100%")
 
   # ── Plot: financial & lifestyle indicators overview ──────────────────────────
@@ -1902,7 +1826,7 @@ server <- function(input, output, session) {
                   paste0(round(pct, 1), "%"), styles[i])
       )
     })
-    fluidRow(cards)
+    fluidRow(class = "ind-card-row", cards)
   })
 }
 
