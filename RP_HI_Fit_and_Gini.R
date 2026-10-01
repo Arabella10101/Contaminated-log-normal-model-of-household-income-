@@ -1,6 +1,5 @@
 # =============================================================================
-# Household income: model fitting (cmLN / mG / mIG) + Gini coefficient
-# Note final values will change slightly each run time
+# Household income: model fitting (cmLN / mLN / mG / mIG) + Gini coefficient
 # =============================================================================
 
 # CHANGE THIS to the location of Fact_IES2023_Households.csv on your machine
@@ -135,7 +134,28 @@ fit_cmLN <- fit_mode_model(
 k_cmLN <- 4
 
 # =============================================================================
-# (B) mG - Gamma, MODE parameterization
+# (B) mLN - log-normal, MODE parameterization (the uncontaminated reference
+#     distribution that cmLN nests, i.e. cmLN with epsilon = 1)
+#     par = c(log(m), log(sigma)),  mu = log(m) + sigma^2
+# =============================================================================
+dlnL_mLN <- function(par, x) {
+  m     <- exp(par[1])
+  sigma <- exp(par[2])
+  sum(dlnorm(x, meanlog = log(m) + sigma^2, sdlog = sigma, log = TRUE))
+}
+
+mLN_disp_inits <- data.frame(log_sigma = log(seq(0.2, 2, length.out = n_steps)))
+
+fit_mLN <- fit_mode_model(
+  x, dlnL_mLN, m_init = start_m, disp_inits = mLN_disp_inits,
+  postprocess = function(par) {
+    list(m = exp(par[1]), sigma = exp(par[2]))
+  }
+)
+k_mLN <- 2
+
+# =============================================================================
+# (C) mG - Gamma, MODE parameterization
 #     mode(Gamma) = (shape - 1) / rate,  requires shape > 1
 #     par = c(log(m), log(shape - 1))  =>  rate = (shape - 1) / m
 # =============================================================================
@@ -160,7 +180,7 @@ fit_mG <- fit_mode_model(
 k_mG <- 2
 
 # =============================================================================
-# (C) mIG - Inverse Gaussian, MODE parameterization
+# (D) mIG - Inverse Gaussian, MODE parameterization
 #     Standard IG(mu, lambda) has mean mu, shape lambda; its mode has no closed
 #     form in mu, so we solve for mu numerically given (m, lambda):
 #       mode = mu * [ sqrt(1 + 9r^2/4) - 3r/2 ],  r = mu / lambda
@@ -226,22 +246,23 @@ AIC_BIC <- function(logLik, k, n) {
 }
 
 ab_cmLN <- AIC_BIC(fit_cmLN$logLik, k_cmLN, n)
+ab_mLN  <- AIC_BIC(fit_mLN$logLik,  k_mLN,  n)
 ab_mG   <- AIC_BIC(fit_mG$logLik,   k_mG,   n)
 ab_mIG  <- AIC_BIC(fit_mIG$logLik,  k_mIG,  n)
 
 comparison_table <- data.frame(
-  model       = c("cmLN", "mG", "mIG"),
-  k           = c(k_cmLN, k_mG, k_mIG),
-  m           = c(fit_cmLN$m, fit_mG$m, fit_mIG$m),
-  param2      = c(fit_cmLN$sigma, fit_mG$shape, fit_mIG$lambda),
-  param2_name = c("sigma", "shape", "lambda"),
-  lambda      = c(fit_cmLN$lambda, NA, NA),
-  epsilon     = c(fit_cmLN$epsilon, NA, NA),
-  logLik      = c(fit_cmLN$logLik, fit_mG$logLik, fit_mIG$logLik),
-  AIC         = c(ab_cmLN["AIC"], ab_mG["AIC"], ab_mIG["AIC"]),
-  BIC         = c(ab_cmLN["BIC"], ab_mG["BIC"], ab_mIG["BIC"]),
-  n_converged = c(fit_cmLN$n_converged, fit_mG$n_converged, fit_mIG$n_converged),
-  n_tries     = c(fit_cmLN$n_tries, fit_mG$n_tries, fit_mIG$n_tries)
+  model       = c("cmLN", "mLN", "mG", "mIG"),
+  k           = c(k_cmLN, k_mLN, k_mG, k_mIG),
+  m           = c(fit_cmLN$m, fit_mLN$m, fit_mG$m, fit_mIG$m),
+  param2      = c(fit_cmLN$sigma, fit_mLN$sigma, fit_mG$shape, fit_mIG$lambda),
+  param2_name = c("sigma", "sigma", "shape", "lambda"),
+  lambda      = c(fit_cmLN$lambda, NA, NA, NA),
+  epsilon     = c(fit_cmLN$epsilon, NA, NA, NA),
+  logLik      = c(fit_cmLN$logLik, fit_mLN$logLik, fit_mG$logLik, fit_mIG$logLik),
+  AIC         = c(ab_cmLN["AIC"], ab_mLN["AIC"], ab_mG["AIC"], ab_mIG["AIC"]),
+  BIC         = c(ab_cmLN["BIC"], ab_mLN["BIC"], ab_mG["BIC"], ab_mIG["BIC"]),
+  n_converged = c(fit_cmLN$n_converged, fit_mLN$n_converged, fit_mG$n_converged, fit_mIG$n_converged),
+  n_tries     = c(fit_cmLN$n_tries, fit_mLN$n_tries, fit_mG$n_tries, fit_mIG$n_tries)
 )
 comparison_table$convergence_rate <- comparison_table$n_converged / comparison_table$n_tries
 comparison_table$AIC_rank <- rank(comparison_table$AIC, na.last = "keep")
@@ -262,7 +283,7 @@ cat(sprintf("\nAIC prefers: %s\nBIC prefers: %s\n",
 plot_dir <- "model_comparison_plots"
 dir.create(plot_dir, showWarnings = FALSE)
 
-model_levels <- c("cmLN", "mG", "mIG")
+model_levels <- c("cmLN", "mLN", "mG", "mIG")
 comparison_table$model <- factor(comparison_table$model, levels = model_levels)
 
 aic_plot <- ggplot(comparison_table, aes(x = model, y = AIC, fill = model)) +
