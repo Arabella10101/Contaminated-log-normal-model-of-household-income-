@@ -3,7 +3,7 @@
 # =============================================================================
 
 # CHANGE THIS to the location of Fact_IES2023_Households.csv on your machine
-DATA_PATH <- "C:/Users/arabe/Documents/Research_Project/Fact_IES2023_Households.csv"
+DATA_PATH <- "C:/Users/user-pc/Downloads/Fact_IES2023_Households.csv"
 
 options(scipen = 999) # turn off sci notation
 
